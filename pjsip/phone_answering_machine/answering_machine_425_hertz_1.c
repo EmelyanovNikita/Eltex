@@ -1,41 +1,4 @@
-/* 
- * Copyright (C) 2008-2011 Teluu Inc. (http://www.teluu.com)
- * Copyright (C) 2003-2008 Benny Prijono <benny@prijono.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA 
- */
 
-/**
- * simple_pjsua.c
- *
- * This is a very simple but fully featured SIP user agent, with the 
- * following capabilities:
- *  - SIP registration
- *  - Making and receiving call
- *  - Audio/media to sound device.
- *
- * Usage:
- *  - To make outgoing call, start simple_pjsua with the URL of remote
- *    destination to contact.
- *    E.g.:
- *       simpleua sip:user@remote
- *
- *  - Incoming calls will automatically be answered with 200.
- *
- * This program will quit once it has completed a single call.
- */
 
 #include <pjsua-lib/pjsua.h>
 
@@ -100,12 +63,8 @@ static void error_exit(const char *title, pj_status_t status)
     exit(1);
 }
 
-/*
- * main()
- *
- * argv[1] may contain URL to call.
- */
-int main(int argc, char *argv[])
+
+int main()
 {
     pjsua_acc_id acc_id;
     pj_status_t status;
@@ -113,12 +72,6 @@ int main(int argc, char *argv[])
     /* Create pjsua first! */
     status = pjsua_create();
     if (status != PJ_SUCCESS) error_exit("Error in pjsua_create()", status);
-
-    /* If argument is specified, it's got to be a valid SIP URL */
-    if (argc > 1) {
-        status = pjsua_verify_url(argv[1]);
-        if (status != PJ_SUCCESS) error_exit("Invalid URL in argv", status);
-    }
 
     /* Init pjsua */
     {
@@ -167,13 +120,6 @@ int main(int argc, char *argv[])
 
         status = pjsua_acc_add(&cfg, PJ_TRUE, &acc_id);
         if (status != PJ_SUCCESS) error_exit("Error adding account", status);
-    }
-
-    /* If URL is specified, make call to the URL. */
-    if (argc > 1) {
-        pj_str_t uri = pj_str(argv[1]);
-        status = pjsua_call_make_call(acc_id, &uri, 0, NULL, NULL, NULL);
-        if (status != PJ_SUCCESS) error_exit("Error making call", status);
     }
 
     /* Wait until user press "q" to quit. */
