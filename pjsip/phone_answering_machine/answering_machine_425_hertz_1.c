@@ -83,6 +83,7 @@ int main()
         cfg.cb.on_call_media_state = &on_call_media_state;
         cfg.cb.on_call_state = &on_call_state;
 
+        // уровень логгирования
         pjsua_logging_config_default(&log_cfg);
         log_cfg.console_level = 4;
 
