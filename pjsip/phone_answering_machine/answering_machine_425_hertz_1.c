@@ -1,6 +1,7 @@
 
 
 #include <pjsua-lib/pjsua.h>
+#include <pjmedia.h>
 
 #define THIS_FILE       "APP"
 
@@ -24,8 +25,55 @@ static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id,
                          (int)ci.remote_info.slen,
                          ci.remote_info.ptr));
 
-    /* Automatically answer incoming calls with 200/OK */
+
+	 // Отправляем ringing (180 Ringing)
+    pjsua_call_answer(call_id, 180, NULL, NULL);
+
+    // Ждем 3 секунды
+    //pj_thread_sleep(RING_DURATION); // ???
+    
+    
+    // После отправляем уже 200 OK
     pjsua_call_answer(call_id, 200, NULL, NULL);
+    
+    //~ // Воспроизводим тон 425 Гц
+    //~ pjmedia_tone_desc tone;
+    //~ tone.freq1 = 425; // Частота 425 Гц
+    //~ tone.freq2 = 0;   // Нет второй частоты
+    //~ tone.on_msec = 1000; // Длительность сигнала (1 секунда)
+    //~ tone.off_msec = 0;   // Без паузы
+    //~ tone.volume = 0;     // Громкость (0 - максимальная)
+    
+	//~ tones[0].freq1 = 200;
+	//~ tones[0].freq2 = 0;
+	//~ tones[0].on_msec = ON_DURATION;
+	//~ tones[0].off_msec = OFF_DURATION;
+	//~ tones[0].volume = PJMEDIA_TONEGEN_VOLUME;
+
+    //~ pjmedia_tone_dial dial;
+    //~ dial.count = 1;
+    //~ dial.tone = &tone;
+	//~ dial.loop = PJ_TRUE; 
+
+    //~ pjsua_conf_port_id tone_port;
+    //~ pj_status_t status = pjsua_dial_dtmf(&dial, &tone_port);
+    
+    //~ if (status == PJ_SUCCESS) 
+    //~ {
+        //~ // Подключаем тон к звонку
+        //~ pjsua_conf_connect(tone_port, ci.conf_slot);
+    //~ }
+    
+    //~ if (status == PJ_SUCCESS) // ???
+    //~ {
+		//~ pjsua_conf_connect(tone_port, ci.conf_slot);
+
+		//~ // Ждем 10 секунд
+		//~ pj_thread_sleep(10000); // ???
+
+		//~ // Останавливаем воспроизведение
+		//~ pjsua_conf_disconnect(tone_port, ci.conf_slot);
+	//~ }
 }
 
 /* Callback called by the library when call's state has changed */
@@ -80,8 +128,6 @@ int main()
 
         pjsua_config_default(&cfg);
         cfg.cb.on_incoming_call = &on_incoming_call;
-        cfg.cb.on_call_media_state = &on_call_media_state;
-        cfg.cb.on_call_state = &on_call_state;
 
         // уровень логгирования
         pjsua_logging_config_default(&log_cfg);
@@ -111,7 +157,8 @@ int main()
 
         pjsua_acc_config_default(&cfg);
         cfg.id = pj_str("sip:" SIP_USER "@" SIP_DOMAIN);
-        cfg.reg_uri = pj_str("sip:" SIP_DOMAIN);
+        cfg.register_on_acc_add = PJ_FALSE; // не регистрируемся
+        //cfg.reg_uri = pj_str("sip:" SIP_DOMAIN);
         cfg.cred_count = 1;
         cfg.cred_info[0].realm = pj_str(SIP_DOMAIN);
         cfg.cred_info[0].scheme = pj_str("digest");
