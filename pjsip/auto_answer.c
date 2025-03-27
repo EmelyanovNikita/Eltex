@@ -1,15 +1,25 @@
 #include <pjsua-lib/pjsua.h>
 #include <pjmedia.h>
-//#include <timer.h>
-//#include <pjlib.h>
 
 #define THIS_FILE "auto_answer.c"
 
 /* Callback from timer when the maximum call duration has been exceeded. */
-static void call_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
+static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
+
+/* Callback from timer when the maximum ./a	call duration has been exceeded. */
+static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
 
 /* Display error and exit application */
 static void error_exit(const char *title, pj_status_t status);
+
+typedef struct
+{
+	pjsua_call_id call_id;
+	pj_timer_entry ringing_timer;
+	pj_timer_entry answering_timer;
+} call_data_t;
+
+static call_data_t call_data;
 
 /* Callback called by the library upon receiving incoming call */
 static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_rx_data *rdata)
@@ -17,46 +27,46 @@ static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_r
 	pjsua_call_info ci;
 	pj_time_val delay;
 	pj_status_t status;
-	pj_timer_entry timer;
 
     PJ_UNUSED_ARG(acc_id);
     PJ_UNUSED_ARG(rdata);
 
     pjsua_call_get_info(call_id, &ci);
-
+    
+    call_data.call_id = call_id;
+	
     PJ_LOG(3,(THIS_FILE, "Incoming call from %.*s!!", (int)ci.remote_info.slen, ci.remote_info.ptr));
 
 	// Отправляем ringing (180 Ringing)
-    pjsua_call_answer(call_id, 180, NULL, NULL);
+    pjsua_call_answer(call_data.call_id, 180, NULL, NULL);
     
     /* Stop hangup timer, if it is active. */
-    if (timer.id)
+    if (call_data.ringing_timer.id)
     {
-        pjsua_cancel_timer(&timer);
-        timer.id = PJ_FALSE;
+        pjsua_cancel_timer(&call_data.ringing_timer);
+        call_data.ringing_timer.id = PJ_FALSE;
     }
     
     // 3 сек ждём перед ответом 
     delay.sec = 3; 
     delay.msec = 0;
     
-    pj_timer_entry_init(&timer, call_id, (void*)&call_id, &call_timeout_callback); //(void*)&call_id
+    pj_timer_entry_init(&call_data.ringing_timer, call_data.call_id, (void*)&call_data.call_id, &ringing_timeout_callback);
     
     PJ_LOG(3,(THIS_FILE, "Before %ld sek pause", delay.sec));
     
-    status = pjsua_schedule_timer(&timer, &delay);
+    status = pjsua_schedule_timer(&call_data.ringing_timer, &delay);
     
     if (status != PJ_SUCCESS) error_exit("Error in pjsua_schedule_timer()", status);
 }
 
 /* Callback from timer when the maximum ./a	call duration has been exceeded. */
-static void call_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry)
+static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry)
 {
-    pjsua_call_id call_id = (*(pjsua_call_id *)entry->user_data);
-	//pjsua_call_id call_id = entry->id;
 	pj_status_t status;
-
-    if (call_id == PJSUA_INVALID_ID) 
+	pj_time_val delay;
+	
+    if (call_data.call_id == PJSUA_INVALID_ID) 
     {
         PJ_LOG(1,(THIS_FILE, "Invalid call ID in timer callback"));
         return;
@@ -65,8 +75,35 @@ static void call_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_e
     PJ_LOG(3,(THIS_FILE, "After pause"));
     
     // Принимаем вызов 200 OK
-    status = pjsua_call_answer(call_id, 200, NULL, NULL);
-    if (status != PJ_SUCCESS) error_exit("Error in pjsua_schedule_timer()", status);
+    status = pjsua_call_answer(call_data.call_id, 200, NULL, NULL);
+    if (status != PJ_SUCCESS) error_exit("Error in pjsua_schedule_timer()", status);    
+    
+    // 7 сек ждём перед завершением 
+    delay.sec = 7; 
+    delay.msec = 0;
+    
+    PJ_LOG(3,(THIS_FILE, "Before %ld sek pause(answer)", delay.sec));
+    
+    pj_timer_entry_init(&call_data.answering_timer, (call_data.call_id + 1), (void*)&call_data.call_id, &answering_timeout_callback);
+    status = pjsua_schedule_timer(&call_data.answering_timer, &delay);
+}
+
+/* Callback from timer when the maximum ./a	call duration has been exceeded. */
+static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry)
+{
+	pj_status_t status;
+
+    if (call_data.call_id == PJSUA_INVALID_ID) 
+    {
+        PJ_LOG(1,(THIS_FILE, "Invalid call ID in timer callback"));
+        return;
+    }
+    
+    PJ_LOG(3,(THIS_FILE, "After answer pause"));
+    
+    // Принимаем вызов 200 OK
+    status = pjsua_call_hangup(call_data.call_id, 0, NULL, NULL);
+    if (status != PJ_SUCCESS) error_exit("Error in pjsua_call_hangup()", status);
 }
 
 /* Callback called by the library when call's state has changed */
