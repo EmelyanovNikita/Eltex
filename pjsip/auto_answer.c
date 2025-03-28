@@ -40,18 +40,22 @@ static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_r
 	// Отправляем ringing (180 Ringing)
     pjsua_call_answer(call_data.call_id, 180, NULL, NULL);
     
-    /* Stop hangup timer, if it is active. */
-    if (call_data.ringing_timer.id)
-    {
-        pjsua_cancel_timer(&call_data.ringing_timer);
-        call_data.ringing_timer.id = PJ_FALSE;
-    }
+    //~ /* Stop hangup timer, if it is active. */
+    //~ if (call_data.ringing_timer.id)
+    //~ {
+        //~ pjsua_cancel_timer(&call_data.ringing_timer);
+        //~ call_data.ringing_timer.id = PJ_FALSE;
+    //~ }
     
     // 3 сек ждём перед ответом 
     delay.sec = 3; 
     delay.msec = 0;
     
-    pj_timer_entry_init(&call_data.ringing_timer, call_data.call_id, (void*)&call_data.call_id, &ringing_timeout_callback);
+    // выбираем номерн для таймера, чтобы он не был равен 0
+    call_data.ringing_timer.id = call_data.call_id != 0 ? call_data.call_id : call_data.call_id + 1;
+    
+    // инициализация таймера
+    pj_timer_entry_init(&call_data.ringing_timer, call_data.ringing_timer.id, (void*)&call_data.call_id, &ringing_timeout_callback);
     
     PJ_LOG(3,(THIS_FILE, "Before %ld sek pause", delay.sec));
     
@@ -65,6 +69,7 @@ static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_time
 {
 	pj_status_t status;
 	pj_time_val delay;
+	pjsua_call_info ci;
 	
     if (call_data.call_id == PJSUA_INVALID_ID) 
     {
@@ -73,7 +78,7 @@ static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_time
     }
     
     PJ_LOG(3,(THIS_FILE, "After pause"));
-    
+
     // Принимаем вызов 200 OK
     status = pjsua_call_answer(call_data.call_id, 200, NULL, NULL);
     if (status != PJ_SUCCESS) error_exit("Error in pjsua_schedule_timer()", status);    
@@ -92,6 +97,7 @@ static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_time
 static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry)
 {
 	pj_status_t status;
+	pjsua_call_info ci;
 
     if (call_data.call_id == PJSUA_INVALID_ID) 
     {
@@ -100,8 +106,8 @@ static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_ti
     }
     
     PJ_LOG(3,(THIS_FILE, "After answer pause"));
-    
-    // Принимаем вызов 200 OK
+	
+    // Завершаем вызов 
     status = pjsua_call_hangup(call_data.call_id, 0, NULL, NULL);
     if (status != PJ_SUCCESS) error_exit("Error in pjsua_call_hangup()", status);
 }
@@ -112,9 +118,33 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event *e)
     pjsua_call_info ci;
 
     PJ_UNUSED_ARG(e);
-
-    pjsua_call_get_info(call_id, &ci);
-    PJ_LOG(3,(THIS_FILE, "Call %d state=%.*s", call_id, (int)ci.state_text.slen, ci.state_text.ptr));
+    
+    pjsua_call_get_info(call_data.call_id, &ci);
+    
+    // проверка на состояние звонка - не успел ли он завершится раньше, чем мы сами его завершаем
+    if(ci.state == PJSIP_INV_STATE_DISCONNECTED | ci.state == PJSIP_INV_STATE_NULL)
+    {
+		/* Stop hangup timer, if it is active. */
+		if (call_data.ringing_timer.id)
+		{
+			PJ_LOG(3,(THIS_FILE, "TIMER RINGING STOPED: %d", call_data.ringing_timer.id));
+			
+			pjsua_cancel_timer(&call_data.ringing_timer);
+			call_data.ringing_timer.id = PJ_FALSE;
+		}
+		
+		/* Stop hangup timer, if it is active. */
+		if (call_data.answering_timer.id)
+		{
+			PJ_LOG(3,(THIS_FILE, "TIMER ANSWERING STOPED: %d", call_data.answering_timer.id));
+			
+			pjsua_cancel_timer(&call_data.answering_timer);
+			call_data.answering_timer.id = PJ_FALSE;
+		}
+		
+		PJ_LOG(3,(THIS_FILE, "Call %d state=%.*s", call_id, (int)ci.state_text.slen, ci.state_text.ptr));
+		return;
+    }
 }
 
 /* Callback called by the library when call's media state has changed */
@@ -157,6 +187,7 @@ int main()
 
         pjsua_config_default(&cfg);
         cfg.cb.on_incoming_call = &on_incoming_call;
+        cfg.cb.on_call_state = &on_call_state;
 
         // уровень логгирования
         pjsua_logging_config_default(&log_cfg);
