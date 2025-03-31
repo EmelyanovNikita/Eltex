@@ -40,18 +40,11 @@ static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_r
 	// Отправляем ringing (180 Ringing)
     pjsua_call_answer(call_data.call_id, 180, NULL, NULL);
     
-    //~ /* Stop hangup timer, if it is active. */
-    //~ if (call_data.ringing_timer.id)
-    //~ {
-        //~ pjsua_cancel_timer(&call_data.ringing_timer);
-        //~ call_data.ringing_timer.id = PJ_FALSE;
-    //~ }
-    
     // 3 сек ждём перед ответом 
     delay.sec = 3; 
     delay.msec = 0;
     
-    // выбираем номерн для таймера, чтобы он не был равен 0
+    // выбираем номер для таймера, чтобы он не был равен 0
     call_data.ringing_timer.id = call_data.call_id != 0 ? call_data.call_id : call_data.call_id + 1;
     
     // инициализация таймера
@@ -218,7 +211,7 @@ int main()
         pjsua_acc_config cfg;
 
         pjsua_acc_config_default(&cfg);
-        cfg.id = pj_str("sip:autoanswer@10.25.72.123"); // sip:autoanswer@10.25.72.123:5062 
+        cfg.id = pj_str("sip:autoanswer@192.168.0.27:5062"); // sip:autoanswer@10.25.72.123:5062 
         cfg.register_on_acc_add = PJ_FALSE; // не регистрируемся
         cfg.reg_uri = pj_str("");
         cfg.cred_count = 0;
