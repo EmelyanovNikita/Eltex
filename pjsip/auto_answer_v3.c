@@ -4,7 +4,10 @@
 
 #define THIS_FILE "auto_answer.c"
 #define TONE_FREQ 425  // Frequency of the tone in Hz
-#define SAMPLES_PER_FRAME 160  // 20ms frame at 8kHz
+#define SAMPLES_PER_FRAME 64
+#define ON_DURATION         7000
+#define OFF_DURATION        7000
+
 
 /* Callback from timer when the maximum call duration has been exceeded. */
 static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
@@ -174,10 +177,22 @@ static void on_call_media_state(pjsua_call_id call_id)
         //cоздаем тон
         pjmedia_port *tonegen;
         pjmedia_tone_desc tone;
-        tone.freq1 = 425;
-        tone.on_msec = 6000;
-        pjmedia_tonegen_create(call_data.pool, 8000, 1, 160, 16, 0, &tonegen);
-        pjmedia_tonegen_play(tonegen, 1, &tone, 0);
+
+        status = pjmedia_tonegen_create(call_data.pool, 8000, 1, SAMPLES_PER_FRAME, 16, 0, &tonegen);
+
+        if (status != PJ_SUCCESS)
+            return 1;
+        
+        {
+            tone.freq1 = 200;
+            tone.freq2 = 0;
+            tone.on_msec = ON_DURATION;
+            tone.off_msec = OFF_DURATION;
+            tone.volume = 32767;
+
+            pjmedia_tonegen_play(tonegen, 1, &tone, 0);
+            PJ_ASSERT_RETURN(status==PJ_SUCCESS, 1);
+        }
 
         //добавляем в конференцию
         pjsua_conf_port_id slot;
