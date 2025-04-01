@@ -107,7 +107,37 @@ static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_r
     if (status != PJ_SUCCESS) error_exit("Error in pjsua_schedule_timer()", status);
 }
 
+pj_status_t stream_to_call( pjsua_call_id call_id )
+{
+    pjmedia_snd_port_param param;
+    pj_status_t status;
+    pjsua_player_id player_id;
 
+    pjmedia_snd_port_param_default(&param);
+
+    status = pjsua_set_null_snd_dev();
+    if (status != PJ_SUCCESS)
+    {
+        PJ_LOG(3,(THIS_FILE, "NOT OKAY pjsua_set_null_snd_dev: %d", status));
+        return status;
+    }
+
+    PJ_LOG(3,(THIS_FILE, "AAA pjsua_player_create"));
+
+    status = pjsua_player_create("converted_sample-15s.wav", 0, &player_id);
+
+    if (status != PJ_SUCCESS)
+    {
+        PJ_LOG(3,(THIS_FILE, "NOT OKAY pjsua_player_create: %d", status));
+        return status;
+    }
+    else
+        PJ_LOG(3,(THIS_FILE, "OKAY pjsua_player_create"));
+
+    status = pjsua_conf_connect( pjsua_player_get_conf_port(player_id), 0);
+
+    return status;                  
+}
 
 static void on_call_state(pjsua_call_id call_id, pjsip_event *e)
 {
@@ -136,20 +166,20 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event *e)
             call_data.answering_timer.id = PJ_FALSE;
         }
         
-        // Stop tone if playing
-        if (call_data.tone_gen)
-        {
-            if (call_data.tone_slot != PJSUA_INVALID_ID)
-            {
-                pjsua_conf_remove_port(call_data.tone_slot);
-            }
-            pjmedia_port_destroy(call_data.tone_gen);
-            call_data.tone_gen = NULL;
-            call_data.tone_slot = PJSUA_INVALID_ID;
-        }
+        //~ // Stop tone if playing
+        //~ if (call_data.tone_gen)
+        //~ {
+            //~ if (call_data.tone_slot != PJSUA_INVALID_ID)
+            //~ {
+                //~ pjsua_conf_remove_port(call_data.tone_slot);
+            //~ }
+            //~ pjmedia_port_destroy(call_data.tone_gen);
+            //~ call_data.tone_gen = NULL;
+            //~ call_data.tone_slot = PJSUA_INVALID_ID;
+        //~ }
 
         // Освобождение пула памяти (если создавался отдельно)
-        pj_pool_release(call_data.pool);
+        //~ pj_pool_release(call_data.pool);
         
         // Reset call ID
         call_data.call_id = PJSUA_INVALID_ID;
@@ -170,44 +200,48 @@ static void on_call_media_state(pjsua_call_id call_id)
     
     if (ci.media_status == PJSUA_CALL_MEDIA_ACTIVE) 
     {
-        
-        // cоздаем пул памяти
-        call_data.pool = pjsua_pool_create("audio", 8000, 8000);
-
-        //cоздаем тон
-        pjmedia_port *tonegen;
-        pjmedia_tone_desc tone;
-
-        status = pjmedia_tonegen_create(call_data.pool, 8000, 1, SAMPLES_PER_FRAME, 16, 0, &tonegen);
+        status =  stream_to_call(call_id);
 
         if (status != PJ_SUCCESS)
-            return 1;
+            PJ_LOG(3,(THIS_FILE, "ERROR stream_to_call"));
+
+        //~ // cоздаем пул памяти
+        //~ call_data.pool = pjsua_pool_create("audio", 8000, 8000);
+
+        //~ //cоздаем тон
+        //~ pjmedia_port *tonegen;
+        //~ pjmedia_tone_desc tone;
+
+        //~ status = pjmedia_tonegen_create(call_data.pool, 8000, 1, SAMPLES_PER_FRAME, 16, 0, &tonegen);
+
+        //~ if (status != PJ_SUCCESS)
+            //~ return;
         
-        {
-            tone.freq1 = 200;
-            tone.freq2 = 0;
-            tone.on_msec = ON_DURATION;
-            tone.off_msec = OFF_DURATION;
-            tone.volume = 32767;
+        //~ {
+            //~ tone.freq1 = 425;
+            //~ tone.freq2 = 0;
+            //~ tone.on_msec = ON_DURATION;
+            //~ tone.off_msec = OFF_DURATION;
+            //~ tone.volume = 32767;
 
-            pjmedia_tonegen_play(tonegen, 1, &tone, 0);
-            PJ_ASSERT_RETURN(status==PJ_SUCCESS, 1);
-        }
+            //~ pjmedia_tonegen_play(tonegen, 1, &tone, 0);
+            //~ PJ_ASSERT_RETURN(status==PJ_SUCCESS, 1);
+        //~ }
 
-        //добавляем в конференцию
-        pjsua_conf_port_id slot;
-        pjsua_conf_add_port(call_data.pool, tonegen, &slot);
+        //~ //добавляем в конференцию
+        //~ pjsua_conf_port_id slot;
+        //~ pjsua_conf_add_port(call_data.pool, tonegen, &slot);
         
-        PJ_LOG(3,(THIS_FILE, "BEFORE pjsua_conf_connect"));
+        //~ PJ_LOG(3,(THIS_FILE, "BEFORE pjsua_conf_connect"));
 
-        //подключаем к звонку
-        status = pjsua_conf_connect(slot, ci.conf_slot);
-        if (status != PJ_SUCCESS) 
-        { 
-            PJ_LOG(3,(THIS_FILE, "NOT GOOD pjsua_conf_connect"));
-            error_exit("Error scheduling answering timer", status);
-        }
-        PJ_LOG(3,(THIS_FILE, "AFTER pjsua_conf_connect"));
+        //~ //подключаем к звонку
+        //~ status = pjsua_conf_connect(slot, ci.conf_slot);
+        //~ if (status != PJ_SUCCESS) 
+        //~ { 
+            //~ PJ_LOG(3,(THIS_FILE, "NOT GOOD pjsua_conf_connect"));
+            //~ error_exit("Error scheduling answering timer", status);
+        //~ }
+        //~ PJ_LOG(3,(THIS_FILE, "AFTER pjsua_conf_connect"));
     
         
         // 7 секунд ждём
@@ -266,7 +300,6 @@ int main()
 
         pjsua_media_config_default(&media_cfg);
         
-        
         status = pjsua_init(&cfg, &log_cfg, &media_cfg);
         if (status != PJ_SUCCESS) 
             error_exit("Error in pjsua_init()", status);
@@ -289,7 +322,7 @@ int main()
         pjsua_acc_config cfg;
 
         pjsua_acc_config_default(&cfg);
-        cfg.id = pj_str("sip:autoanswer@192.168.0.27:5062");
+        cfg.id = pj_str("sip:autoanswer@10.25.72.123:5062");
         cfg.register_on_acc_add = PJ_FALSE;
         cfg.reg_uri = pj_str("");
         cfg.cred_count = 0;
@@ -317,6 +350,6 @@ int main()
     }
 
     pjsua_destroy();
-
-    return 0;
 }
+
+ 
