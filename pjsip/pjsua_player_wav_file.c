@@ -304,6 +304,7 @@ pj_status_t registers_wav_file(const char *filename)
     // if (app_config.auto_play_hangup)
     //     play_options |= PJMEDIA_FILE_NO_LOOP;
 
+    // pj_str_t str = pj_str(MUSIC_FILE);
     pj_str_t str = pj_str("file.wav");
     
     status = pjsua_player_create(&str, 0, &wav_player_id);
