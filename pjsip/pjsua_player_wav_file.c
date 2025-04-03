@@ -4,7 +4,7 @@
 #include <pjmedia/tonegen.h>
 
 #define THIS_FILE "pjsua_player_wav_file.c"
-#define MUSIC_FILE "file.wav"
+#define MUSIC_FILE "output_1.wav"
 
 static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
 static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
@@ -221,7 +221,7 @@ int main()
 
         // Logging level
         pjsua_logging_config_default(&log_cfg);
-        log_cfg.console_level = 4;
+        log_cfg.console_level = 5;
 
         pjsua_media_config_default(&media_cfg);
         
@@ -247,7 +247,7 @@ int main()
         pjsua_acc_config cfg;
 
         pjsua_acc_config_default(&cfg);
-        cfg.id = pj_str("sip:autoanswer@192.168.0.27:5062");
+        cfg.id = pj_str("sip:autoanswer@10.25.72.123:5062");
         cfg.register_on_acc_add = PJ_FALSE;
         cfg.reg_uri = pj_str("");
         cfg.cred_count = 0;
@@ -288,7 +288,7 @@ int main()
 /* Optionally registers WAV file */
 pj_status_t registers_wav_file(const char *filename)
 {
-    PJ_LOG(3, (THIS_FILE, "BEGINIGAAA WAV file registered: %s", filename));
+
     pj_status_t status;
     pjsua_player_id wav_id;
     unsigned play_options = 0;
@@ -300,12 +300,9 @@ pj_status_t registers_wav_file(const char *filename)
         wav_player_id = PJSUA_INVALID_ID;
         wav_port = PJSUA_INVALID_ID;
     }
-
-    // if (app_config.auto_play_hangup)
-    //     play_options |= PJMEDIA_FILE_NO_LOOP;
-
-    // pj_str_t str = pj_str(MUSIC_FILE);
-    pj_str_t str = pj_str("file.wav");
+    
+    pj_str_t str = pj_str(MUSIC_FILE);
+    //pj_str_t str = pj_str("output_1.wav");
     
     status = pjsua_player_create(&str, 0, &wav_player_id);
     if (status != PJ_SUCCESS) {
@@ -314,12 +311,6 @@ pj_status_t registers_wav_file(const char *filename)
     }
 
     wav_port = pjsua_player_get_conf_port(wav_player_id);
-
-
-    // /* Проверим что у нас есть логи при достижении конца файла*/
-    // pjmedia_port *port;
-    // pjsua_player_get_port(wav_player_id, &port);
-    // pjmedia_wav_player_set_eof_cb2(port, NULL, &on_wav_eof);
     
     PJ_LOG(3, (THIS_FILE, "WAV file registered: %s", filename));
     return PJ_SUCCESS;
