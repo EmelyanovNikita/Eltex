@@ -6,10 +6,16 @@
 #define THIS_FILE "pjsua_player_wav_file.c"
 #define MUSIC_FILE "output_1.wav"
 
+#define RING_FREQ1          425
+#define RING_FREQ2          0
+#define RING_ON             200
+#define RING_OFF            0
+
 static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
 static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
 static void error_exit(const char *title, pj_status_t status);
-pj_status_t registers_wav_file(const char *filename);
+pj_status_t registers_tones_player();
+pj_status_t init_tone(pjmedia_tone_desc tone_temp);
 
 typedef struct
 {
@@ -19,10 +25,11 @@ typedef struct
     pj_pool_t *pool;
 } call_data_t;
 
-static call_data_t call_data;
-static char *wav_filename = NULL;
-static pjsua_player_id wav_player_id = PJSUA_INVALID_ID;
-static pjsua_conf_port_id wav_port = PJSUA_INVALID_ID;
+static call_data_t                  call_data;
+static pjmedia_tone_desc            tone;
+static pj_pool_t                    *pool;
+static pjsua_conf_port_id           tone_conf_port_id  = PJSUA_INVALID_ID;
+pjmedia_port                        *tone_pjmedia_port;
 
 static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry)
 {
@@ -98,7 +105,7 @@ pj_status_t stream_to_call(pjsua_call_id call_id)
 {
     pj_status_t status;
     
-    if (wav_player_id == PJSUA_INVALID_ID) 
+    if (tone_conf_port_id  == PJSUA_INVALID_ID) 
     {
         PJ_LOG(1, (THIS_FILE, "No WAV file registered"));
         return PJ_ENOTFOUND;
@@ -108,7 +115,7 @@ pj_status_t stream_to_call(pjsua_call_id call_id)
     pjsua_call_get_info(call_id, &ci);
     
     /* Connect WAV player to call */
-    status = pjsua_conf_connect(wav_port, ci.conf_slot);
+    status = pjsua_conf_connect(tone_conf_port_id , ci.conf_slot);
 
     if (status != PJ_SUCCESS) 
     {
@@ -176,22 +183,11 @@ static void on_call_media_state(pjsua_call_id call_id)
                            &answering_timeout_callback);
         
         pjsua_schedule_timer(&call_data.answering_timer, &delay);
-
-
     }
 }
 
 static void error_exit(const char *title, pj_status_t status)
-{            
-    /* Close wav player */
-
-    if (wav_player_id != PJSUA_INVALID_ID) 
-    {
-        pjsua_player_destroy(wav_player_id);
-        wav_player_id = PJSUA_INVALID_ID;
-        wav_port = PJSUA_INVALID_ID;
-    }
-
+{
     pjsua_perror(THIS_FILE, title, status);
     pjsua_destroy();
     exit(1);
@@ -218,6 +214,9 @@ int main()
     /* Create pjsua */
     status = pjsua_create();
     if (status != PJ_SUCCESS) error_exit("Error in pjsua_create()", status);
+
+    /* Create pool for application */
+    pool = pjsua_pool_create("pjsua-app", 1000, 1000);
 
     /* Init pjsua */
     {
@@ -268,11 +267,11 @@ int main()
     }
 
     // создаём пллер и порты для файла
-    status = registers_wav_file(MUSIC_FILE);
+    status = registers_tones_player(MUSIC_FILE);
 
     if (status != PJ_SUCCESS) 
     {
-        PJ_LOG(1, (THIS_FILE, "Failed to register WAV file: %s", wav_filename));
+        PJ_LOG(1, (THIS_FILE, "Failed to register tone"));
     }
     
     for (;;) 
@@ -293,45 +292,63 @@ int main()
             pjsua_call_hangup_all();
     }
 
-    /* Close wav player */
-
-    if (wav_player_id != PJSUA_INVALID_ID) 
+    /* Close ring port */
+    if ( tone_pjmedia_port && tone_conf_port_id!= PJSUA_INVALID_ID) 
     {
-        pjsua_player_destroy(wav_player_id);
-        wav_player_id = PJSUA_INVALID_ID;
-        wav_port = PJSUA_INVALID_ID;
+        pjsua_conf_remove_port(tone_conf_port_id);
+        tone_conf_port_id = PJSUA_INVALID_ID;
+        pjmedia_port_destroy(tone_pjmedia_port);
+        tone_pjmedia_port = NULL;
     }
 
     pjsua_destroy();
 }
 
-/* Optionally registers WAV file */
-pj_status_t registers_wav_file(const char *filename)
+    /* Optionally registers tone players */
+pj_status_t registers_tones_player()
 {
 
     pj_status_t status;
     pjsua_player_id wav_id;
     unsigned play_options = 0;
+    pjmedia_port *tone_pjmedia_port ;
+    char name[80];
+    pj_str_t label;
 
-    /* If already registered, clean up first */
-    if (wav_player_id != PJSUA_INVALID_ID) 
+    status = init_tone(tone);
+    if (status != PJ_SUCCESS) 
     {
-        pjsua_player_destroy(wav_player_id);
-        wav_player_id = PJSUA_INVALID_ID;
-        wav_port = PJSUA_INVALID_ID;
-    }
-    
-    pj_str_t str = pj_str(MUSIC_FILE);
-    //pj_str_t str = pj_str("output_1.wav");
-    
-    status = pjsua_player_create(&str, 0, &wav_player_id);
-    if (status != PJ_SUCCESS) {
-        PJ_LOG(1, (THIS_FILE, "Error creating WAV player: %d", status));
-        return status;
+        pjsua_perror(THIS_FILE, "Unable to INIT tone", status);
+            return status;
     }
 
-    wav_port = pjsua_player_get_conf_port(wav_player_id);
+    /* Registers tone players */
+
+    pj_ansi_snprintf(name, sizeof(name), "tone-%d,%d", RING_FREQ1, RING_FREQ2);
+    label = pj_str(name);
+
+    status = pjmedia_tonegen_create2(pool, &label, 16000, 1, 160, 16, PJMEDIA_TONEGEN_LOOP,  &tone_pjmedia_port );
+    if (status != PJ_SUCCESS) 
+    {
+        pjsua_perror(THIS_FILE, "Unable to create tone generator", status);
+            return status;
+    }
+
+    status = pjsua_conf_add_port(pool, tone_pjmedia_port , &tone_conf_port_id);
+    pj_assert(status == PJ_SUCCESS);
+
+    status = pjmedia_tonegen_play(tone_pjmedia_port , 1, &tone, 0);
+    pj_assert(status == PJ_SUCCESS);
     
-    PJ_LOG(3, (THIS_FILE, "WAV file registered: %s", filename));
+    PJ_LOG(3, (THIS_FILE, "Tone generator : %s", name));
     return PJ_SUCCESS;
+}
+
+/* Optionally INIT tone */
+pj_status_t init_tone(pjmedia_tone_desc tone_temp)
+{
+    tone.freq1 = RING_FREQ1;
+    tone.freq2 = RING_FREQ2;
+    tone.on_msec = RING_ON;
+    tone.off_msec = RING_OFF;
 }
