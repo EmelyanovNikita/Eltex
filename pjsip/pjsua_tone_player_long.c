@@ -1,4 +1,7 @@
 // compile with gcc pjsua_player_wav_file.c -o auto_answer $(pkg-config --cflags --libs libpjproject)
+// nikita@nikita-System-Product-Name:~/c/Eltex/Eltex/pjsip$ file output_1.wav
+// output_1.wav: RIFF (little-endian) data, WAVE audio, Microsoft PCM, 16 bit, mono 16000 Hz
+
 #include <pjsua-lib/pjsua.h>
 #include <pjmedia.h>
 #include <pjmedia/tonegen.h>
