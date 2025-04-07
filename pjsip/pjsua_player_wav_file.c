@@ -4,7 +4,7 @@
 #include <pjmedia/tonegen.h>
 
 #define THIS_FILE "pjsua_player_wav_file.c"
-#define MUSIC_FILE "output_1.wav"
+#define MUSIC_FILE "output_file.wav"
 
 static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
 static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
@@ -310,8 +310,6 @@ pj_status_t registers_wav_file(const char *filename)
 {
 
     pj_status_t status;
-    pjsua_player_id wav_id;
-    unsigned play_options = 0;
 
     /* If already registered, clean up first */
     if (wav_player_id != PJSUA_INVALID_ID) 
@@ -322,7 +320,6 @@ pj_status_t registers_wav_file(const char *filename)
     }
     
     pj_str_t str = pj_str(MUSIC_FILE);
-    //pj_str_t str = pj_str("output_1.wav");
     
     status = pjsua_player_create(&str, 0, &wav_player_id);
     if (status != PJ_SUCCESS) {
