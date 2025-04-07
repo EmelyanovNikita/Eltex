@@ -45,7 +45,7 @@ typedef struct
     pj_timer_entry ans_timer;
 } call_data_t;
 
-static call_data_t call;
+static call_data_t call_data;
 
 // void init_calls(call_data_t *p_calls, int num)
 // {
