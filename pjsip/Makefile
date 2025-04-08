@@ -1,11 +1,11 @@
-# Makefile for pjsua_player_wav_file.c
+# Makefile for pjsua_player_many_calls.c
 
 # Compiler settings
 CC = gcc
 CFLAGS = -Wall -Wextra $(shell pkg-config --cflags libpjproject)
 LDFLAGS = $(shell pkg-config --libs libpjproject)
 TARGET = auto_answer
-SRC = pjsua_player_wav_file_test.c
+SRC = pjsua_player_many_calls.c
 
 # Default target
 all: $(TARGET)
