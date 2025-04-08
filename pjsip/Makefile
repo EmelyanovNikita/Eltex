@@ -1,4 +1,4 @@
-# Makefile for pjsua_player_many_calls.c 
+# Makefile for pjsua_player_many_calls.c
 
 # Compiler settings
 CC = gcc
