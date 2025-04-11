@@ -1,7 +1,3 @@
-// compile with gcc pjsua_player_wav_file.c -o auto_answer $(pkg-config --cflags --libs libpjproject)
-// sipp -sn uac -r 9 -rp 1000 10.25.72.123:5062
-// sipp -sn uac 10.25.72.123:5062 -users 5 -m 100 -d 8000
-// sipp -sn uac -r 9 -rp 1000 10.25.72.123:5062
 #include <pjsua-lib/pjsua.h>
 #include <pjmedia.h>
 #include <pjmedia/tonegen.h>
@@ -24,6 +20,7 @@ typedef struct
     int                   freq2;
     int                   on_msec;
     int                   off_msec;
+    pj_str_t              name;
 } player_tone_t;
 
 typedef struct 
@@ -31,6 +28,7 @@ typedef struct
     pj_str_t            wav_filename;
     pjsua_player_id     wav_player_id;
     pjsua_conf_port_id  wav_port;
+    pj_str_t            name;
 } player_wav_file_t;
 
 typedef struct 
@@ -44,43 +42,44 @@ typedef struct
 {
     pjsua_call_id           call_id;
     pj_timer_entry          ringing_timer;
-    pj_timer_entry          answering_timer;
-    char                    target_uri[NAME_SIZE];
+    pj_timer_entry          call_media_timer;
+    pj_str_t                target_uri;
+    pj_pool_t               *pool;
 } call_data_t;
 
 static call_data_t      call_data[MAX_CALLS];
 static players_t        players;
-char                    avaible_target_uri[4][NAME_SIZE];
+pj_str_t                avaible_target_uri[4];
 
 static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
-static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
+static void call_media_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
 static void error_exit(const char *title, pj_status_t status);
-pj_status_t registers_wav_file(player_wav_file_t *player);
-pj_status_t registers_tones_player(player_tone_t *player);
+pj_status_t register_wav_file(player_wav_file_t *player);
+pj_status_t register_tones_player(player_tone_t *player);
 
-pj_bool_t parse_local_info_to_target_name(const pj_str_t *local_info, char *buffer, size_t buf_size) 
-{
-    const char *start = strchr(local_info->ptr, ':');
-    if (!start) return PJ_FALSE;
+// pj_bool_t parse_local_info_to_target_name(const pj_str_t *local_info, char *buffer, size_t buf_size) 
+// {
+//     const char *start = strchr(local_info->ptr, ':');
+//     if (!start) return PJ_FALSE;
 
-    start++;
-    const char *end = strchr(start, '@');
-    if (!end || (end - start) <= 0) return PJ_FALSE;
+//     start++;
+//     const char *end = strchr(start, '@');
+//     if (!end || (end - start) <= 0) return PJ_FALSE;
     
-    size_t len = end - start;
-    if (len >= buf_size) len = buf_size - 1;
+//     size_t len = end - start;
+//     if (len >= buf_size) len = buf_size - 1;
     
-    strncpy(buffer, start, len);
-    buffer[len] = '\0';
+//     strncpy(buffer, start, len);
+//     buffer[len] = '\0';
     
-    return PJ_SUCCESS;
-}
+//     return PJ_SUCCESS;
+// }
 
-pj_bool_t check_uri(char *target_uri)
+pj_bool_t check_existing_uris(pj_str_t *target_uri)
 {
     for (int i = 0; i < 4; ++i) // 4 num_avaible_uri
     {
-        if (strstr(avaible_target_uri[i], target_uri)) 
+        if ( (pj_strcmp(&avaible_target_uri[i], target_uri)) == 0)
         {
             return PJ_TRUE;
         } 
@@ -91,10 +90,10 @@ pj_bool_t check_uri(char *target_uri)
 // test variant заполение всех URIs 
 void fill_URIs()
 {
-    strcpy(avaible_target_uri[0], "long_tone");
-    strcpy(avaible_target_uri[1], "KPV_tone");
-    strcpy(avaible_target_uri[2], "WAV_player");
-    strcpy(avaible_target_uri[3], "service");
+    avaible_target_uri[0] = pj_str("long_tone");
+    avaible_target_uri[1] = pj_str("KPV_tone");
+    avaible_target_uri[2] = pj_str("WAV_player");
+    avaible_target_uri[3] = pj_str("service");
 }
 
 static call_data_t* get_call_data(pjsua_call_id call_id) 
@@ -115,7 +114,11 @@ static call_data_t* allocate_call_data(pjsua_call_id call_id)
         {
             call_data[i].call_id = call_id;
             call_data[i].ringing_timer.id = PJ_FALSE;
-            call_data[i].answering_timer.id = PJ_FALSE;
+            call_data[i].call_media_timer.id = PJ_FALSE;
+            call_data[i].pool = pjsua_pool_create(NULL, 1000, 1000);
+            call_data[i].target_uri.ptr = (char*) pj_pool_alloc(call_data[i].pool , 256);
+            // //     PJ_LOG(3,(THIS_FILE, "IHERE 1!!"));
+            // call_data[i].target_uri = (char*) pj_pool_alloc(call_data[i].pool, NAME_SIZE);
             return &call_data[i];
         }
     }
@@ -131,11 +134,17 @@ static void free_call_data(pjsua_call_id call_id)
         {
             pjsua_cancel_timer(&cd->ringing_timer);
         }
-        if (cd->answering_timer.id) 
+        if (cd->call_media_timer.id) 
         {
-            pjsua_cancel_timer(&cd->answering_timer);
+            pjsua_cancel_timer(&cd->call_media_timer);
         }
         cd->call_id = PJSUA_INVALID_ID;
+        if (cd->pool != NULL)
+        {
+            pj_pool_release(cd->pool);
+            cd->pool == NULL;
+        }
+        
     }
 }
 
@@ -157,7 +166,7 @@ static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_time
     if (status != PJ_SUCCESS) error_exit("Error answering call", status);
 }
 
-static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry) 
+static void call_media_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry) 
 {
     pjsua_call_id call_id = *(pjsua_call_id*)entry->user_data;
     call_data_t *cd = get_call_data(call_id);
@@ -175,20 +184,52 @@ static void answering_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_ti
     if (status != PJ_SUCCESS) error_exit("Error in pjsua_call_hangup()", status);
 }
 
-static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_rx_data *rdata) 
+static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_rx_data *rdata) // использовать rdata // 
 {
     pjsua_call_info ci;
     pj_time_val delay;
     pj_status_t status;
     call_data_t *cd;
     pj_bool_t bool_status;
+    char buf[NAME_SIZE];
 
     PJ_UNUSED_ARG(acc_id);
     PJ_UNUSED_ARG(rdata);
-
-
     
+    pjsip_uri *uri;
+    pjsip_uri *request_uri = NULL;
+    pjsip_sip_uri *sip_uri;
+    pjsip_sip_uri *request_sip_uri = NULL;
+
+    //uri = rdata->msg_info.to->uri; // uri = pjsip_uri_get_uri(rdata->msg_info.msg->line.req.uri); // 
+    // request_uri = pjsip_uri_get_uri(rdata->msg_info.msg->line.req.uri);
+
+    // if (PJSIP_URI_SCHEME_IS_SIP(request_uri) ||
+    // PJSIP_URI_SCHEME_IS_SIPS(request_uri))
+    // {
+    //     PJ_LOG(3,(THIS_FILE, "request_uri IS SIP!!"));
+    //     //request_sip_uri = (pjsip_sip_uri*)pjsip_uri_get_uri(request_uri);
+    //     request_sip_uri = (pjsip_sip_uri*)request_uri;
+    // }
+
+    sip_uri = (pjsip_sip_uri *) pjsip_uri_get_uri(rdata->msg_info.msg->line.req.uri);
+
+    //if (request_sip_uri == NULL) PJ_LOG(3,(THIS_FILE, "IS NULL sip_uri!!"));
+
+
+    // pj_str_t str = pj_str("WAV_player");
+    // pj_str_t str_lt = pj_str("long_tone");
+    // pj_str_t str_KPVt = pj_str("KPV_tone");
+    // if (pj_strcmp(&sip_uri->user, &str)==0)
+    //     PJ_LOG(3,(THIS_FILE, "GOOD AAAAAA WAV_player!"));;
+    // if (pj_strcmp(&sip_uri->user, &str_lt)==0)
+    //     PJ_LOG(3,(THIS_FILE, "GOOD AAAAAA long_tone!"));;
+    // if (pj_strcmp(&sip_uri->user, &str_KPVt)==0)
+    //     PJ_LOG(3,(THIS_FILE, "GOOD AAAAAA KPV_tone!"));;
+
+
     cd = allocate_call_data(call_id);
+
     if (!cd) 
     {
         PJ_LOG(1,(THIS_FILE, "Failed to allocate call data for call %d", call_id));
@@ -197,14 +238,17 @@ static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_r
     }
 
     pjsua_call_get_info(call_id, &ci);
-
-    bool_status = parse_local_info_to_target_name( &(ci.local_info), cd -> target_uri, NAME_SIZE);
     
     PJ_LOG(3,(THIS_FILE, "Incoming call from %.*s!!", (int)ci.remote_info.slen, ci.remote_info.ptr));
-    PJ_LOG(3,(THIS_FILE, "CALL TO  %s!!", cd -> target_uri));
 
-    bool_status = check_uri(cd -> target_uri);
-    PJ_LOG(3,(THIS_FILE, "AAAA check_uri: %d", bool_status));
+    /////////////
+
+    //cd->target_uri.ptr = (char*) pj_pool_alloc(cd->pool, 256);
+    pj_strcpy(&cd->target_uri, &sip_uri->user);
+    
+    //////////////////////////////////////
+
+    bool_status = check_existing_uris(&cd->target_uri);
     
     if (bool_status == PJ_TRUE)
     {
@@ -230,27 +274,31 @@ static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_r
     if (status != PJ_SUCCESS) error_exit("Error in pjsua_schedule_timer()", status);
 }
 
-static pj_status_t connect_audio_to_call(pjsua_call_id call_id, const char* target_uri) 
+static pj_status_t connect_audio_to_call(pjsua_call_id call_id, pj_str_t *target_uri) 
 {
     pjsua_call_info ci;
     pjsua_call_get_info(call_id, &ci);
 
     // Выбираем нужный плеер в зависимости от номера
-    if (strstr(target_uri, "long_tone")) 
+    if (pj_strcmp(&players.file_player.name, target_uri)==0)
+    {
+        return pjsua_conf_connect(players.file_player.wav_port, ci.conf_slot);
+        PJ_LOG(3,(THIS_FILE, "GOOD AAAAAA WAV_player!"));;
+    }
+    else if (pj_strcmp(&players.long_tone.name, target_uri)==0)
     {
         return pjsua_conf_connect(players.long_tone.tone_conf_port_id, ci.conf_slot);
-    } 
-    else if (strstr(target_uri, "KPV_tone")) 
+        PJ_LOG(3,(THIS_FILE, "GOOD AAAAAA long_tone!"));;
+    }
+    else  if (pj_strcmp(&players.KPV_tone.name, target_uri)==0)
     {
         return pjsua_conf_connect(players.KPV_tone.tone_conf_port_id, ci.conf_slot);
-    } 
-    else if (strstr(target_uri, "WAV_player"))
-    {
-        return pjsua_conf_connect(players.file_player.wav_port, ci.conf_slot);
+        PJ_LOG(3,(THIS_FILE, "GOOD AAAAAA KPV_tone!"));;
     }
-    else if (strstr(target_uri, "service")) // service@10.25.72.123
+    else if (pj_strcmp(&players.file_player.name, target_uri)==0) // service@10.25.72.123
     {
         return pjsua_conf_connect(players.file_player.wav_port, ci.conf_slot);
+        PJ_LOG(3,(THIS_FILE, "GOOD AAAAAA WAV_player!"));;
     }
     else 
     {
@@ -284,7 +332,7 @@ static void on_call_media_state(pjsua_call_id call_id)
     
     if (ci.media_status == PJSUA_CALL_MEDIA_ACTIVE && cd) 
     {
-        pj_status_t status = connect_audio_to_call(call_id, cd->target_uri);
+        pj_status_t status = connect_audio_to_call(call_id, &cd->target_uri);
         if (status != PJ_SUCCESS) 
         {
             PJ_LOG(1, (THIS_FILE, "Error connecting audio to call %d: %d", call_id, status));
@@ -294,13 +342,13 @@ static void on_call_media_state(pjsua_call_id call_id)
         delay.sec = 7; 
         delay.msec = 0;
         
-        cd->answering_timer.id = call_id + 1000;
-        pj_timer_entry_init(&cd->answering_timer, 
-                           cd->answering_timer.id, 
+        cd->call_media_timer.id = call_id + 1000;
+        pj_timer_entry_init(&cd->call_media_timer, 
+                           cd->call_media_timer.id, 
                            (void*)&cd->call_id, 
-                           &answering_timeout_callback);
+                           &call_media_timeout_callback);
         
-        pjsua_schedule_timer(&cd->answering_timer, &delay);
+        pjsua_schedule_timer(&cd->call_media_timer, &delay);
     }
 }
 
@@ -394,12 +442,13 @@ int main()
     players.long_tone.pool = pjsua_pool_create("long_tone", 1000, 1000);
     players.long_tone.tone_conf_port_id = PJSUA_INVALID_ID;
     players.long_tone.tone_pjmedia_port = NULL;
-    status = registers_tones_player(&players.long_tone);
+    players.long_tone.name = pj_str("long_tone");
+    status = register_tones_player(&players.long_tone);
 
     if (status != PJ_SUCCESS) 
     {
         PJ_LOG(1, (THIS_FILE, "Error creating WAV player: %d", status));
-        if (status != PJ_SUCCESS) error_exit("Error registers_tones_player", status);
+        if (status != PJ_SUCCESS) error_exit("Error register_tones_player", status);
     }
 
     players.KPV_tone.freq1 = 425;
@@ -409,23 +458,25 @@ int main()
     players.KPV_tone.pool = pjsua_pool_create("KPV_tone", 1000, 1000);
     players.KPV_tone.tone_conf_port_id = PJSUA_INVALID_ID;
     players.KPV_tone.tone_pjmedia_port = NULL;
-    status = registers_tones_player(&players.KPV_tone);
+    players.KPV_tone.name = pj_str("KPV_tone");
+    status = register_tones_player(&players.KPV_tone);
 
     if (status != PJ_SUCCESS) 
     {
         PJ_LOG(1, (THIS_FILE, "Error creating WAV player: %d", status));
-        if (status != PJ_SUCCESS) error_exit("Error registers_tones_player", status);
+        if (status != PJ_SUCCESS) error_exit("Error register_tones_player", status);
     }
 
     players.file_player.wav_filename = pj_str(MUSIC_FILE);
     players.file_player.wav_player_id = PJSUA_INVALID_ID;
     players.file_player.wav_port = PJSUA_INVALID_ID;
-    status = registers_wav_file(&players.file_player);
+    players.file_player.name = pj_str("WAV_player");
+    status = register_wav_file(&players.file_player);
 
     if (status != PJ_SUCCESS) 
     {
         PJ_LOG(1, (THIS_FILE, "Error creating WAV player: %d", status));
-        if (status != PJ_SUCCESS) error_exit("Error registers_wav_file", status);
+        if (status != PJ_SUCCESS) error_exit("Error register_wav_file", status);
     }
 
     // заполняем все возможные URIs
@@ -452,7 +503,7 @@ int main()
     return 0;
 }
 
-pj_status_t registers_wav_file(player_wav_file_t *player) 
+pj_status_t register_wav_file(player_wav_file_t *player) 
 {
     pj_status_t status;
 
@@ -475,7 +526,7 @@ pj_status_t registers_wav_file(player_wav_file_t *player)
     return PJ_SUCCESS;
 }
 
-pj_status_t registers_tones_player(player_tone_t *player) 
+pj_status_t register_tones_player(player_tone_t *player) 
 {
     pj_status_t status;
     char name[80];

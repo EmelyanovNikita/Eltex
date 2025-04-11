@@ -56,20 +56,22 @@
 
   <!-- Ожидаем BYE от удаленной стороны -->
   <recv request="BYE" rtd="true">
-    <!-- Отвечаем 200 OK на BYE -->
-    <send>
-      <![CDATA[
-        SIP/2.0 200 OK
-        [Via:]
-        [From:]
-        [To:]
-        [Call-ID:]
-        [CSeq:]
-        Contact: sip:sipp@[local_ip]:[local_port]
-        Content-Length: 0
-      ]]>
-    </send>
   </recv>
+
+  <!-- Отвечаем 200 OK на BYE -->
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: sipp <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: [service] <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 BYE
+      Max-Forwards: 70
+      Subject: Performance Test
+      Content-Length: 0
+    ]]>
+  </send>
 
   <!-- Статистика -->
   <ResponseTimeRepartition value="10, 20, 30, 40, 50, 100, 150, 200"/>
