@@ -6,8 +6,6 @@
 #include <pjlib-util.h>
 #include <pjlib.h>
 
-#include <pjmedia/tonegen.h>
-
 /* For logging purpose. */
 #define THIS_FILE   "simpleua_calls_many.c"
 
@@ -28,11 +26,9 @@
 
 #define PORT_COUNT      254
 
-// Убедитесь, что параметры совпадают с конференц-бриджем
 #define CLOCK_RATE          16000
-#define SAMPLES_PER_FRAME   (CLOCK_RATE/100)  // 160 samples
-#define BITS_PER_SAMPLE     16
-#define NCHANNELS           1                 // Моно
+#define SAMPLES_PER_FRAME   (CLOCK_RATE/100)
+#define BITS_PER_SAMPLE 16
 
 
 /*
@@ -74,14 +70,7 @@ static struct app_t
     pj_caching_pool      cp;
     pj_pool_t           *pool;
     pj_pool_t           *snd_pool;
-
     pj_pool_t           *wav_pool;
-    pjmedia_port        *wav_port;
-    unsigned            wav_slot;
-
-    pj_pool_t           *writer_pool;
-    pjmedia_port        *writer_port;
-    unsigned            writer_slot;
 
     pjmedia_conf        *mconf;
 
@@ -101,6 +90,7 @@ static struct app_t
     pj_mutex_t          *mutex;
     pj_bool_t           enable_msg_logging;
 } app;
+
 
 /* Create and add to conference bridge Master port - null soud device*/
 pj_status_t null_sound_device_master_port();
@@ -195,7 +185,7 @@ int main(int argc, char *argv[])
     app.pool = NULL;
     pj_status_t status;
     unsigned i;
-
+    pjmedia_port *file_port;
     pjmedia_snd_port *snd_port;
     char tmp[10];
     pjmedia_port *conf_port;
@@ -216,9 +206,8 @@ int main(int argc, char *argv[])
 
     // В начале main():
     app.pool = pj_pool_create(&app.cp.factory, "app", 16000, 16000, NULL);
-    app.snd_pool = pj_pool_create(&app.cp.factory, "snd", 16000, 16000, NULL);
-    app.wav_pool = pj_pool_create(&app.cp.factory, "wav", 16000, 16000, NULL);
-    app.writer_pool = pj_pool_create(&app.cp.factory, "writer_pool", 16000, 16000, NULL);
+    app.snd_pool = pj_pool_create(&app.cp.factory, "snd", 8000, 8000, NULL);
+    app.wav_pool = pj_pool_create(&app.cp.factory, "wav", 4000, 4000, NULL);
 
     /* Create global endpoint: */
     {
@@ -303,10 +292,10 @@ int main(int argc, char *argv[])
     //app.pool = pjmedia_endpt_create_pool(app.g_med_endpt, "Media pool", 512, 512);      
 
 
-    status = pjmedia_conf_create(app.pool,
+    status = pjmedia_conf_create(app.wav_pool,
             30,
             CLOCK_RATE,
-            NCHANNELS, SAMPLES_PER_FRAME, BITS_PER_SAMPLE,
+            1, SAMPLES_PER_FRAME, 16,
             PJMEDIA_CONF_NO_DEVICE,
             &app.mconf);
 
@@ -347,91 +336,41 @@ int main(int argc, char *argv[])
         return status;
     }
 
-    ////////////////////////// создание и присоединение к бриджу врайтера 
     /* Create WAVE file writer port. */
-    PJ_LOG(4, (THIS_FILE, "pjmedia_wav_writer_port_create"));
-
-    // status = pjmedia_wav_writer_port_create(  app.writer_pool, argv[1],
-    //                                           CLOCK_RATE,
-    //                                           NCHANNELS,
-    //                                           SAMPLES_PER_FRAME,
-    //                                           BITS_PER_SAMPLE,
-    //                                           0, 0, 
-    //                                           &app.writer_port);
-
-    // PJ_LOG(4, (THIS_FILE, "pjmedia_wav_writer_port_createD"));
-    // if (status != PJ_SUCCESS) 
-    // {
-    //     app_perror(THIS_FILE, "Unable to open WAV file for writing", status);
-    //     return 1;
-    // }
-
     status = pjmedia_wav_writer_port_create(  app.pool, argv[1],
                                               CLOCK_RATE,
                                               NCHANNELS,
                                               SAMPLES_PER_FRAME,
                                               BITS_PER_SAMPLE,
                                               0, 0, 
-                                              &app.writer_port);
-    if (status != PJ_SUCCESS) 
-    {
+                                              &file_port);
+    if (status != PJ_SUCCESS) {
         app_perror(THIS_FILE, "Unable to open WAV file for writing", status);
         return 1;
     }
 
-    PJ_LOG(4, (THIS_FILE, "pjmedia_conf_add_port"));
-
-    status = pjmedia_conf_add_port(app.mconf, app.pool,
-        app.writer_port, NULL, &app.writer_slot);
-
-    PJ_LOG(4, (THIS_FILE, "pjmedia_conf_addED_port"));
-
-    ////////////////////////// создание и присоединение к бриджу плеера 
-    status = pjmedia_wav_player_port_create(
-                                    app.wav_pool, "output_file.wav",
-                                    SAMPLES_PER_FRAME *
-                                    1000 / NCHANNELS /
-                                    CLOCK_RATE,
-                                    0, 0, &app.wav_port);
-    if (status != PJ_SUCCESS) 
-    {
-        pjsua_perror(THIS_FILE, "Unable to open file for playback", status);
+    /* Create sound player port. */
+    status = pjmedia_snd_port_create_rec
+    ( 
+                app.pool,                              /* pool                 */
+                -1,                                /* use default dev.     */
+                PJMEDIA_PIA_SRATE(&file_port->info),/* clock rate.         */
+                PJMEDIA_PIA_CCNT(&file_port->info),/* # of channels.       */
+                PJMEDIA_PIA_SPF(&file_port->info), /* samples per frame.   */
+                PJMEDIA_PIA_BITS(&file_port->info),/* bits per sample.     */
+                0,                                 /* options              */
+                &snd_port                          /* returned port        */
+                );
+    if (status != PJ_SUCCESS) {
+        app_perror(THIS_FILE, "Unable to open sound device", status);
         return 1;
     }
-
-    status = pjmedia_conf_add_port(app.mconf, app.wav_pool,
-                                   app.wav_port, "output_file.wav", &app.wav_slot);
-    if (status != PJ_SUCCESS) 
-    {
-        pjmedia_port_destroy(app.wav_port);
-        pjsua_perror(THIS_FILE, "Unable to add file to conference bridge",
-                     status);
-        return 1;
-    }
-
-
-    // /* Create sound player port. */
-    // status = pjmedia_snd_port_create_rec
-    // ( 
-    //             app.pool,                              /* pool                 */
-    //             -1,                                /* use default dev.     */
-    //             PJMEDIA_PIA_SRATE(&app.writer_port->info),/* clock rate.         */
-    //             PJMEDIA_PIA_CCNT(&app.writer_port->info),/* # of channels.       */
-    //             PJMEDIA_PIA_SPF(&app.writer_port->info), /* samples per frame.   */
-    //             PJMEDIA_PIA_BITS(&app.writer_port->info),/* bits per sample.     */
-    //             0,                                 /* options              */
-    //             &snd_port                          /* returned port        */
-    //             );
-    // if (status != PJ_SUCCESS) {
-    //     app_perror(THIS_FILE, "Unable to open sound device", status);
-    //     return 1;
-    // }
 
     /* Connect file port to the sound player.
      * Stream playing will commence immediately.
      */
-    // status = pjmedia_snd_port_connect(snd_port, app.writer_port); // pjmedia_conf_connect_port
-    // PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
+    status = pjmedia_snd_port_connect(snd_port, file_port);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
 
 
 
@@ -490,15 +429,15 @@ int main(int argc, char *argv[])
     //         pjmedia_transport_close(g_med_transport[i]);
     // }
 
-    // if (app.wav_player_id != PJSUA_INVALID_ID) 
-    // {
-    //     pjsua_player_destroy(players.file_player.wav_player_id);
-    // }
-
     /* Destroy sound device */
     status = pjmedia_snd_port_destroy(snd_port);
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
     snd_port = NULL;
+
+    /* Уничтожаем WAV writer port */
+    status = pjmedia_port_destroy(file_port);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
+    file_port = NULL;
 
     /* Останавливаем и уничтожаем мастер-порт */
     status = pjmedia_master_port_stop(app.null_snd);
@@ -512,7 +451,6 @@ int main(int argc, char *argv[])
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
     app.null_port = NULL;
 
-
     /* Уничтожаем конференц-мост */
     status = pjmedia_conf_destroy(app.mconf);
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
@@ -524,7 +462,7 @@ int main(int argc, char *argv[])
         pjmedia_event_mgr_destroy(NULL);
     }
 
-    /* Уничтожаем медиа-эндпоинт */
+    /* 7. Уничтожаем медиа-эндпоинт */
     status = pjmedia_endpt_destroy(app.g_med_endpt);
     app.g_med_endpt = NULL;
 
@@ -533,21 +471,6 @@ int main(int argc, char *argv[])
     {
         pjsip_endpt_destroy(app.g_endpt);
         app.g_endpt = NULL;
-    }
-
-    // Перед уничтожением пулов:
-    if (app.wav_port) 
-    {
-        pjmedia_conf_remove_port(app.mconf, app.wav_slot);
-        pjmedia_port_destroy(app.wav_port);
-        app.wav_port = NULL;
-    }
-
-    if (app.writer_port) 
-    {
-        pjmedia_conf_remove_port(app.mconf, app.writer_slot);
-        pjmedia_port_destroy(app.writer_port);
-        app.writer_port = NULL;
     }
 
     /* Освобождаем пулы памяти (в обратном порядке создания) */
