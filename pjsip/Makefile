@@ -5,7 +5,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra $(shell pkg-config --cflags libpjproject)
 LDFLAGS = $(shell pkg-config --libs libpjproject)
 TARGET = auto_answer
-SRC = pjsua_player_many_calls_test.c
+SRC = simpleua_calls_many_test.c
 
 # Default target
 all: $(TARGET)
