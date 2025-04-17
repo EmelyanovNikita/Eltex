@@ -10,7 +10,7 @@
 #include <pjmedia/tonegen.h>
 
 /* For logging purpose. */
-#define THIS_FILE   "simpleua_calls_many.c"
+#define THIS_FILE   "wav_file_rec.c"
 
 #include "util.h"
 
@@ -197,7 +197,6 @@ int main(int argc, char *argv[])
 
     pjmedia_snd_port *snd_port;
     char tmp[10];
-    pjmedia_port *conf_port;
 
     /* Must init PJLIB first: */
     status = pj_init();
@@ -298,10 +297,7 @@ int main(int argc, char *argv[])
     status = pjmedia_endpt_create(&app.cp.factory, NULL, 1, &app.g_med_endpt);
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
 
-    /* Create pool. */
-    //app.pool = pjmedia_endpt_create_pool(app.g_med_endpt, "Media pool", 512, 512);      
-
-
+    // создание конференц-брниджа
     status = pjmedia_conf_create(app.pool,
             30,
             CLOCK_RATE,
@@ -309,103 +305,28 @@ int main(int argc, char *argv[])
             PJMEDIA_CONF_NO_DEVICE,
             &app.mconf);
 
-    /* Create null port if not exists */
-    if (!app.null_port) 
-    {
-        status = pjmedia_null_port_create(app.pool, CLOCK_RATE, 1,
-                                        SAMPLES_PER_FRAME, BITS_PER_SAMPLE,
-                                        &app.null_port);
-        if (status != PJ_SUCCESS) 
-        {
-            PJ_LOG(3, (THIS_FILE, "Unable to create null port"));
-            pj_log_pop_indent();
-            return status;
-        }
-    }
-
-    /* Get the port0 of the conference bridge. */
-    conf_port = pjmedia_conf_get_master_port(app.mconf); //pjmedia_conf_remove_port
-    pj_assert(conf_port != NULL);
-
-    /* Create master port, connecting port0 of the conference bridge to
-    * a null port.
-    */
-    status = pjmedia_master_port_create(app.snd_pool, app.null_port,
-                                        conf_port, 0, &app.null_snd);
-    if (status != PJ_SUCCESS)
-    {
-        PJ_LOG(3, (THIS_FILE, "Unable to create null sound device: %d", (int)status));
-        return status;
-    }
-
-    /* Start the master port */
-    status = pjmedia_master_port_start(app.null_snd);
+    // создание и подключение мастер порта
+    status = create_and_connect_master_port();
     if (status != PJ_SUCCESS) 
     {
-        PJ_LOG(4, (THIS_FILE, "Unable to start null sound device: %d", status));
-        return status;
+        app_perror(THIS_FILE, "Unable create and connect master port (create_and_connect_master_port)", status);
+        return 1;
     }
-
-    ////////////////////////// создание и присоединение к бриджу врайтера 
-    PJ_LOG(4, (THIS_FILE, "pjmedia_wav_writer_port_create"));
-
-    status = pjmedia_wav_writer_port_create(  app.pool, argv[1],
-                                              CLOCK_RATE,
-                                              NCHANNELS,
-                                              SAMPLES_PER_FRAME,
-                                              BITS_PER_SAMPLE,
-                                              0, 700000, 
-                                              &app.writer_port);
+    // создание и присоединение к бриджу врайтера 
+    status = create_and_connect_writer_to_conf(argv[1]);
     if (status != PJ_SUCCESS) 
     {
-        app_perror(THIS_FILE, "Unable to open WAV file for writing", status);
+        app_perror(THIS_FILE, "Unable create and connect writer port", status);
         return 1;
     }
 
-    PJ_LOG(4, (THIS_FILE, "pjmedia_conf_add_port"));
-
-    status = pjmedia_conf_add_port(app.mconf, app.pool,
-        app.writer_port, NULL, &app.writer_slot);
-
-    PJ_LOG(4, (THIS_FILE, "pjmedia_conf_addED_port"));
-
-    ////////////////////////// создание и присоединение к бриджу плеера 
-    status = pjmedia_wav_player_port_create(
-                                    app.pool, "output_4.wav",
-                                    SAMPLES_PER_FRAME *
-                                    1000 / NCHANNELS /
-                                    CLOCK_RATE,
-                                    0, 700000, &app.wav_port);
+    // создание и присоединение к бриджу плеера 
+    status = create_and_connect_player_to_conf("output_4.wav");
     if (status != PJ_SUCCESS) 
     {
-        app_perror(THIS_FILE, "Unable to open file for playback", status);
+        app_perror(THIS_FILE, "Unable create and connect player port", status);
         return 1;
     }
-    else PJ_LOG(4, (THIS_FILE, "pjmedia_wav_player_port_create"));
-
-    status = pjmedia_conf_add_port(app.mconf, app.pool,
-                                   app.wav_port, NULL, &app.wav_slot);
-    if (status != PJ_SUCCESS) 
-    {
-        pjmedia_port_destroy(app.wav_port);
-        app_perror(THIS_FILE, "Unable to add file to conference bridge",
-                     status);
-        return 1;
-    }
-    else PJ_LOG(4, (THIS_FILE, "ADDED"));
-
-    status = pjmedia_conf_connect_port(app.mconf, app.wav_slot, app.writer_slot, 0);
-    if (status != PJ_SUCCESS) 
-    {
-        app_perror(THIS_FILE, "Unable to connect slot writer_slot to wav_slot",
-                     status);
-        return 1;
-    }
-    else PJ_LOG(4, (THIS_FILE, "connected"));
-
-    /* 
-     * Recording should be started now. 
-     */
 
     /* Create event manager */
     status = pjmedia_event_mgr_create(app.pool, 0, NULL);
@@ -505,61 +426,112 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-pj_status_t null_sound_device_master_port()
+pj_status_t create_and_connect_master_port()
 {
-    pjmedia_port *conf_port;
     pj_status_t status;
+    pjmedia_port *conf_port;
 
-    PJ_LOG(4,(THIS_FILE, "Setting null sound device.."));
-    pj_log_push_indent();
-
-    //pj_mutex_lock(app.mutex);
-
-    /* Close existing sound device */
-    //close_snd_dev();
-
-    /* Create memory pool for sound device. */
-    app.snd_pool = pj_pool_create(&app.cp.factory, "null_sound_device pool", 4000, 4000, NULL);
-    if (!app.snd_pool)
+    /* Create null port if not exists */
+    if (!app.null_port) 
     {
-        PJ_LOG(3, (THIS_FILE, "Unable to create pool for null sound device"));
-        return PJ_ENOMEM;
+        status = pjmedia_null_port_create(app.pool, CLOCK_RATE, 1,
+                                        SAMPLES_PER_FRAME, BITS_PER_SAMPLE,
+                                        &app.null_port);
+        if (status != PJ_SUCCESS) 
+        {
+            PJ_LOG(3, (THIS_FILE, "Unable to create null port"));
+            pj_log_pop_indent();
+            return status;
+        }
     }
-    
-    PJ_LOG(4,(THIS_FILE, "Opening null sound device.."));
 
     /* Get the port0 of the conference bridge. */
-    conf_port = pjmedia_conf_get_master_port(app.mconf);
+    conf_port = pjmedia_conf_get_master_port(app.mconf); //pjmedia_conf_remove_port
     pj_assert(conf_port != NULL);
 
     /* Create master port, connecting port0 of the conference bridge to
-     * a null port.
-     */
+    * a null port.
+    */
     status = pjmedia_master_port_create(app.snd_pool, app.null_port,
                                         conf_port, 0, &app.null_snd);
-    if (status != PJ_SUCCESS) 
+    if (status != PJ_SUCCESS)
     {
-        PJ_LOG(3, (THIS_FILE, "Unable to create null sound device"));
-                     
-         //pj_mutex_unlock(app.mutex);
-        pj_log_pop_indent();
+        PJ_LOG(3, (THIS_FILE, "Unable to create null sound device: %d", (int)status));
         return status;
     }
 
     /* Start the master port */
     status = pjmedia_master_port_start(app.null_snd);
     if (status != PJ_SUCCESS) 
-    {   
-        PJ_LOG(3, (THIS_FILE, "Unable to start null sound device"));
+    {
+        PJ_LOG(4, (THIS_FILE, "Unable to start null sound device: %d", status));
+        return status;
+    }
+    return PJ_SUCCESS;
+}
 
-        //pj_mutex_unlock(app.mutex);
-
-        pj_log_pop_indent();
+pj_status_t create_and_connect_writer_to_conf(const char *filename)
+{
+    pj_status_t status;
+    status = pjmedia_wav_writer_port_create(  app.pool, filename,
+                                            CLOCK_RATE,
+                                            NCHANNELS,
+                                            SAMPLES_PER_FRAME,
+                                            BITS_PER_SAMPLE,
+                                            0, 700000, 
+                                            &app.writer_port);
+    if (status != PJ_SUCCESS) 
+    {
+        app_perror(THIS_FILE, "Unable to open WAV file for writing", status);
         return status;
     }
 
-    //pj_mutex_unlock(app.mutex);
-
-    pj_log_pop_indent();
+    status = pjmedia_conf_add_port(app.mconf, app.pool,
+        app.writer_port, NULL, &app.writer_slot);
+    if (status != PJ_SUCCESS) 
+    {
+        app_perror(THIS_FILE, "Unable to add writer to conf", status);
+        return status;
+    }
+    
     return PJ_SUCCESS;
+}
+
+pj_status_t create_and_connect_player_to_conf(const char *filename)
+{
+    pj_status_t status;
+
+    status = pjmedia_wav_player_port_create(
+        app.pool, filename,
+        SAMPLES_PER_FRAME *
+        1000 / NCHANNELS /
+        CLOCK_RATE,
+        0, 700000, &app.wav_port);
+
+    if (status != PJ_SUCCESS) 
+    {
+        app_perror(THIS_FILE, "Unable to open file for playback", status);
+        return 1;
+    }
+
+    status = pjmedia_conf_add_port(app.mconf, app.pool,
+        app.wav_port, NULL, &app.wav_slot);
+    if (status != PJ_SUCCESS) 
+    {
+        pjmedia_port_destroy(app.wav_port);
+        app_perror(THIS_FILE, "Unable to add file to conference bridge",
+        status);
+        return status;
+    }
+
+    status = pjmedia_conf_connect_port(app.mconf, app.wav_slot, app.writer_slot, 0);
+    if (status != PJ_SUCCESS) 
+    {
+        app_perror(THIS_FILE, "Unable to connect slot writer_slot to wav_slot",
+        status);
+        return status;
+    }
+
+    return PJ_SUCCESS;
+
 }
