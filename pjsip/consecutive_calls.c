@@ -211,33 +211,20 @@ static pjsip_module msg_logger =
 static void call_on_state_changed( pjsip_inv_session *inv, 
     pjsip_event *e)
 {
-    pj_status_t status;
     PJ_UNUSED_ARG(e);
-
-    if (inv->state == PJSIP_INV_STATE_DISCONNECTED)
-    {
-        PJ_LOG(3,(THIS_FILE, "Call DISCONNECTED [reason=%d (%s)]", 
-        inv->cause,
-        pjsip_get_status_text(inv->cause)->ptr));
-
-        g_inv = NULL;
-        // PJ_LOG(3,(THIS_FILE, "One call completed, application quitting..."));
-        // g_complete = 1;
+    
+    if (inv->state == PJSIP_INV_STATE_DISCONNECTED) {
+        pj_mutex_lock(app.mutex);
         
-        // включаем однонаправленную преедачу от плеера к записывателю
-        status = pjmedia_conf_disconnect_port(app.mconf, app.wav_slot, media_slot);
-        if (status != PJ_SUCCESS) 
-        {
-            app_perror(THIS_FILE, "Unable to connect slot writer_slot to wav_slot",
-            status);
-            return status;
+        // Находим и очищаем звонок
+        for (int i = 0; i < MAX_CALLS; i++) {
+            if (app.calls[i].inv == inv && app.calls[i].in_use) {
+                cleanup_call(&app.calls[i]);
+                break;
+            }
         }
-        else  PJ_LOG(3,(THIS_FILE, "PORT DISCONNECTED"));
-    } 
-    else 
-    {
-        PJ_LOG(3,(THIS_FILE, "Call state changed to %s", 
-        pjsip_inv_state_name(inv->state)));
+        
+        pj_mutex_unlock(app.mutex);
     }
 }
 
