@@ -1,4 +1,4 @@
-//  ./auto_answer output_2.wav <- в какой файл будет записано
+//  ./auto_answer output_2.wav <- в какой файл будет записано (откуда - output_4.wav)
 #include <pjsip.h>
 #include <pjmedia.h>
 #include <pjmedia-codec.h>
