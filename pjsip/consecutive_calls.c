@@ -1,4 +1,3 @@
-//  ./auto_answer output_2.wav <- в какой файл будет записано
 #include <pjsip.h>
 #include <pjmedia.h>
 #include <pjmedia-codec.h>
@@ -7,13 +6,14 @@
 #include <pjlib-util.h>
 #include <pjlib.h>
 
-#include <pjmedia/tonegen.h>
-
-/* For logging purpose. */
-#define THIS_FILE   "consecutive_calls.c"
-
 #include "util.h"
 
+#define THIS_FILE   "consecutive_calls.c"
+#define CLOCK_RATE          16000
+#define SAMPLES_PER_FRAME   (CLOCK_RATE/100)
+#define BITS_PER_SAMPLE     16
+#define NCHANNELS           1
+#define MAX_CALLS           30
 
 /* Settings */
 #define AF              pj_AF_INET() /* Change to pj_AF_INET6() for IPv6.
@@ -25,109 +25,71 @@
 #define MAX_MEDIA_CNT   1            /* Media count, set to 1 for audio
                                       * only or 2 for audio and video   */
 
-#define MAX_CALLS       30
-
 #define PORT_COUNT      254
-
-// Убедитесь, что параметры совпадают с конференц-бриджем
-#define CLOCK_RATE          16000
-#define SAMPLES_PER_FRAME   (CLOCK_RATE/100)  // 160 samples
-#define BITS_PER_SAMPLE     16
-#define NCHANNELS           1                 // Моно
-
-
-/*
- * Static variables.
- */
-
-static pj_bool_t             g_complete;    /* Quit flag.               */
-
-static pjmedia_transport_info g_med_tpinfo[MAX_MEDIA_CNT]; 
-                                            /* Socket info for media    */
-static pjmedia_transport    *g_med_transport[MAX_MEDIA_CNT];
-                                            /* Media stream transport   */
-static pjmedia_sock_info     g_sock_info[MAX_MEDIA_CNT];  
-                                            /* Socket info array        */
-
-/* Call variables: */
-static pjsip_inv_session    *g_inv;         /* Current invite session.  */
-static pjmedia_stream       *g_med_stream;  /* Call's audio stream.     */
-// static pjmedia_snd_port     *g_snd_port;    /* Sound device.            */
-
-// static pjmedia_master_port  *null_snd;      /**< Master port for null sound.    */
-// static pjmedia_port         *null_port;     /**< Null port.                     */
-
-pjmedia_stream_info                 stream_info;
-const pjmedia_sdp_session           *local_sdp;
-const pjmedia_sdp_session           *remote_sdp;
-pjmedia_port                        *media_port;
-unsigned                            media_slot;
-
-static pj_bool_t on_rx_request(pjsip_rx_data *rdata);
-
-static struct call_t
-{
-    pjsip_inv_session   *g_inv;
-} call;
 
 typedef struct 
 {
     pjmedia_tone_desc     tone;
     unsigned              tone_slot;
     pjmedia_port         *tone_pjmedia_port;
-    pj_str_t              name;
 } player_tone_t;
 
-/*
-* App data
-*/                                  
-static struct app_t
+typedef struct call_t 
 {
-    // Main app data
-    pj_caching_pool         cp;             /* Global pool factory         */
-    pj_pool_t               *pool;          /* main app pool               */
+    pjsip_inv_session           *inv;
+    pjmedia_stream              *stream;
+    pjmedia_port                *port;
+    unsigned                    slot;
+    pj_bool_t                   in_use;
+    pjmedia_transport           *transport;
+    pj_str_t                    sip_uri_target_user;
+} call_t;
 
-    // Sound device
-    pj_pool_t               *snd_pool;      /* Sound's pool                 */
+static struct app_t 
+{
+    pj_caching_pool             cp;
+    pj_pool_t                   *pool;
+    pj_pool_t                   *snd_pool;
+    pjmedia_endpt               *med_endpt;
+    pjsip_endpoint              *sip_endpt;
+    pjmedia_conf                *conf;
+    pjmedia_port                *null_port;
+    pjmedia_master_port         *null_snd;
 
-    // Wav file player
-    pjmedia_port            *wav_port;
-    unsigned                wav_slot;
-    pjmedia_port            *writer_port;
-    unsigned                writer_slot;
+    pjmedia_port                *wav_port;
+    unsigned                    wav_slot;
+    pj_str_t                    wav_player_name;
 
-    // Tone player
+    pj_str_t                    long_tone_player_name;
+    player_tone_t               long_tone;
 
-    player_tone_t           long_tone;
-    player_tone_t           KPV_tone;
+    pj_str_t                    KVP_tone_player_name;
+    player_tone_t               KVP_tone;
 
-    /* Media: */
-
-    pjmedia_conf        *mconf;             /* Conference bridge */
-
-    /* SIP variables */
-    pjsip_endpoint      *g_endpt;
-    pjmedia_endpt       *g_med_endpt;
-
-    //pjmedia_port        *conf_port;
-    
-    pjmedia_port        *null_port;
-    pjmedia_master_port *null_snd;  /**< Master port for null sound.    */
-    
-    struct call_t       calls[MAX_CALLS];
-
-    pj_bool_t           quit;
-    pj_thread_t         *worker_thread;
-
-    pj_mutex_t          *mutex;
-    pj_bool_t           enable_msg_logging;
+    pjmedia_port                *writer_port;
+    unsigned                    writer_slot;
+    call_t                      calls[MAX_CALLS];
+    pj_thread_t                 *worker_thread;
+    pj_bool_t                   quit;
+    pj_mutex_t                  *mutex;
 } app;
 
-/* This is a PJSIP module to be registered by application to handle
- * incoming requests outside any dialogs/transactions. The main purpose
- * here is to handle incoming INVITE request message, where we will
- * create a dialog and INVITE session for it.
- */
+/* Прототипы функций */
+static pj_status_t init_system();
+static pj_status_t init_pjlib();
+static pj_status_t init_sip();
+static pj_status_t init_media();
+static pj_status_t cleanup_call(call_t *call);
+static pj_status_t cleanup_resources();
+static void call_on_state_changed(pjsip_inv_session *inv, pjsip_event *e);
+static void call_on_media_update(pjsip_inv_session *inv, pj_status_t status);
+static pj_bool_t on_rx_request(pjsip_rx_data *rdata);
+static int worker_proc(void *arg);
+static pj_status_t add_media_to_call(call_t *call);
+pj_status_t create_and_connect_master_port();
+pj_status_t create_and_connect_player_to_conf(const char *filename);
+static void call_on_forked(pjsip_inv_session *inv, pjsip_event *e);
+
 static pjsip_module mod_simpleua =
 {
     NULL, NULL,                     /* prev, next.              */
@@ -144,7 +106,6 @@ static pjsip_module mod_simpleua =
     NULL,                           /* on_tx_response()         */
     NULL,                           /* on_tsx_state()           */
 };
-
 
 /* Notification on incoming messages */
 static pj_bool_t logging_on_rx_msg(pjsip_rx_data *rdata)
@@ -208,24 +169,267 @@ static pjsip_module msg_logger =
 
 };
 
-static void call_on_state_changed( pjsip_inv_session *inv, 
-    pjsip_event *e)
+
+/* Основная функция */
+int main(int argc, char *argv[]) 
+{
+    pj_status_t status;
+    
+    status = init_system();
+    if (status != PJ_SUCCESS) 
+    {
+        app_perror(THIS_FILE, "Unable init system", status);
+        return 1;
+    }
+
+    // // Инициализация
+    // status = init_pjlib();
+    // if (status != PJ_SUCCESS) return 1;
+    
+    // status = init_sip();
+    // if (status != PJ_SUCCESS) return 1;
+    
+    // status = init_media();
+    // if (status != PJ_SUCCESS) return 1;
+
+    // // создание и присоединение к бриджу тона
+    // status = create_and_connect_tone_to_conf(&app.long_tone);
+    // PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
+
+
+    // задаём название плеера и тонов, на эти номера будет звонить клиент и в 
+    // зависимости от того ком набрал клиент ему будет производиться соответсвующтие звуки в трубку
+    app.wav_player_name = pj_str("WAV_file");
+
+    // создание и присоединение к бриджу плеера 
+    status = create_and_connect_player_to_conf("output_4.wav");
+    if (status != PJ_SUCCESS) 
+    {
+        app_perror(THIS_FILE, "Unable create and connect player port", status);
+        return 1;
+    }
+
+    // инициализация тона
+    app.long_tone.tone.freq1 =          425;
+    app.long_tone.tone.freq2 =           0;
+    app.long_tone.tone.on_msec =         1000;
+    app.long_tone.tone.off_msec =        0;
+    app.long_tone.tone.volume =          0;
+    app.long_tone.tone.flags =           0;
+    app.long_tone.tone_slot =            -1;
+    app.long_tone.tone_pjmedia_port =   NULL;
+    app.long_tone_player_name =         pj_str("long_tone");
+
+    // создание и присоединение к бриджу тона
+    status = create_and_connect_tone_to_conf(&app.long_tone);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
+
+    // инициализация тона
+    app.KVP_tone.tone.freq1 =           425;
+    app.KVP_tone.tone.freq2 =           0;
+    app.KVP_tone.tone.on_msec =         1000;
+    app.KVP_tone.tone.off_msec =        4000;
+    app.KVP_tone.tone.volume =          0;
+    app.KVP_tone.tone.flags =           0;
+    app.KVP_tone.tone_slot =            -1;
+    app.KVP_tone.tone_pjmedia_port =   NULL;
+    app.KVP_tone_player_name =         pj_str("KVP_tone");
+
+    // создание и присоединение к бриджу тона
+    status = create_and_connect_tone_to_conf(&app.KVP_tone);
+
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
+    /* Create event manager */
+    status = pjmedia_event_mgr_create(app.pool, 0, NULL);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
+
+    pj_thread_create(app.pool, "sipecho", &worker_proc, NULL, 0, 0,
+        &app.worker_thread);
+
+    // Основной цикл
+    for (;;)
+    {
+        char s[10];
+
+        printf("\nMenu:\n"
+               "  h    Hangup all calls\n"
+               "  q    Quit\n");
+
+        if (fgets(s, sizeof(s), stdin) == NULL)
+            continue;
+
+        if (s[0]=='q')
+            break;
+    }
+
+    // Очистка
+    cleanup_resources();
+    return 0;
+}
+
+/* Инициализация PJLIB */
+static pj_status_t init_pjlib() 
+{
+    pj_status_t status;
+    
+    status = pj_init();
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    status = pjlib_util_init();
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    pj_caching_pool_init(&app.cp, NULL, 0);
+    app.pool = pj_pool_create(&app.cp.factory, "app", 4000, 4000, NULL);
+    if (!app.pool) return PJ_ENOMEM;
+    
+    // status = pj_mutex_create(app.pool, "mutex", PJ_MUTEX_SIMPLE, &app.mutex);
+    // PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    return PJ_SUCCESS;
+}
+
+/* Инициализация SIP стека */
+static pj_status_t init_sip() 
+{
+    pj_status_t status;
+    
+    // Создание SIP endpoint
+    const pj_str_t *hostname = pj_gethostname();
+
+    status = pjsip_endpt_create(&app.cp.factory, hostname->ptr, &app.sip_endpt);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    // Добавление UDP транспорта
+    pj_sockaddr addr;
+    pj_sockaddr_init(pj_AF_INET(), &addr, NULL, (pj_uint16_t)SIP_PORT);
+    
+    status = pjsip_udp_transport_start(app.sip_endpt, &addr.ipv4, NULL, 1, NULL);
+    if (status != PJ_SUCCESS) return status;
+    
+    // Инициализация модулей
+    status = pjsip_tsx_layer_init_module(app.sip_endpt);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    status = pjsip_ua_init_module(app.sip_endpt, NULL);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    // Инициализация модуля INVITE
+    pjsip_inv_callback inv_cb;
+    pj_bzero(&inv_cb, sizeof(inv_cb));
+    inv_cb.on_state_changed = &call_on_state_changed;
+    inv_cb.on_new_session = &call_on_forked;
+    inv_cb.on_media_update = &call_on_media_update;
+    
+    status = pjsip_inv_usage_init(app.sip_endpt, &inv_cb);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    /* Initialize 100rel support */
+    status = pjsip_100rel_init_module(app.sip_endpt);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+
+    // Регистрация модулей
+    status = pjsip_endpt_register_module(app.sip_endpt, &mod_simpleua);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    status = pjsip_endpt_register_module( app.sip_endpt, &msg_logger);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
+
+    return PJ_SUCCESS;
+}
+
+/* Инициализация медиа */
+static pj_status_t init_media() 
+{
+    pj_status_t status;
+    
+    // Создание медиа endpoint
+    status = pjmedia_endpt_create(&app.cp.factory, NULL, 1, &app.med_endpt);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+
+    app.pool = pjmedia_endpt_create_pool(app.med_endpt, "Media pool", 16000, 16000);   
+    if (!app.pool) return PJ_ENOMEM;
+
+    // Инициализация кодеков
+    status = pjmedia_codec_g711_init(app.med_endpt);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    // Создание конференц-моста
+    status = pjmedia_conf_create(app.pool, MAX_CALLS+2, CLOCK_RATE, 
+                                NCHANNELS, SAMPLES_PER_FRAME, 
+                                BITS_PER_SAMPLE, PJMEDIA_CONF_NO_DEVICE, &app.conf);                    
+    if (status != PJ_SUCCESS) return status;
+    
+    // создание и подключение мастер порта
+    status = create_and_connect_master_port();
+    if (status != PJ_SUCCESS) 
+    {
+        return status;
+    }
+    
+    return PJ_SUCCESS;
+}
+
+/* Обработчик изменения состояния звонка */
+static void call_on_state_changed(pjsip_inv_session *inv, pjsip_event *e) 
 {
     PJ_UNUSED_ARG(e);
     
     if (inv->state == PJSIP_INV_STATE_DISCONNECTED) {
-        pj_mutex_lock(app.mutex);
+        // pj_mutex_lock(app.mutex);
         
-        // Находим и очищаем звонок
+        // Находим звонок в массиве
         for (int i = 0; i < MAX_CALLS; i++) {
-            if (app.calls[i].inv == inv && app.calls[i].in_use) {
+            if (app.calls[i].inv == inv && app.calls[i].in_use) 
+            {
                 cleanup_call(&app.calls[i]);
                 break;
             }
         }
         
-        pj_mutex_unlock(app.mutex);
+        // pj_mutex_unlock(app.mutex);
     }
+}
+
+/* Очистка звонка */
+static pj_status_t cleanup_call(call_t *call) 
+{
+    pj_status_t status;
+    if (!call->in_use) return PJ_SUCCESS;
+    
+    if (call->port && call->slot != (unsigned)-1) 
+    {
+        pjmedia_conf_remove_port(app.conf, call->slot);
+        PJ_LOG(3, (THIS_FILE, "pjmedia_conf_remove_port - DONE"));
+    }
+    
+    if (call->port) 
+    {
+        pjmedia_port_destroy(call->port);
+        PJ_LOG(3, (THIS_FILE, "pjmedia_port_destroy - DONE"));
+    }
+    
+    // if (call->stream) 
+    // {
+    //     pjmedia_stream_destroy(call->stream);
+    //     PJ_LOG(3, (THIS_FILE, "pjmedia_stream_destroy - DONE"));
+    // }
+
+    if (call->transport) 
+    {
+        status = pjmedia_transport_close(call->transport);
+        PJ_LOG(3, (THIS_FILE, "pjmedia_transport_close - DONE"));
+    }
+
+    call->sip_uri_target_user;
+    
+    call->in_use = PJ_FALSE;
+    call->inv = NULL;
+    call->port = NULL;
+    call->stream = NULL;
+    call->slot = (unsigned)-1;
+    call->transport = NULL;
+    
+    return PJ_SUCCESS;
 }
 
 /* This callback is called when dialog has forked. */
@@ -236,439 +440,250 @@ static void call_on_forked(pjsip_inv_session *inv, pjsip_event *e)
     PJ_UNUSED_ARG(e);
 }
 
-static void call_on_media_update( pjsip_inv_session *inv,
-                                  pj_status_t status)
+/* Очистка всех ресурсов */
+static pj_status_t cleanup_resources() 
 {
-
-
-    if (status != PJ_SUCCESS) 
+    // Очистка всех звонков
+    for (int i = 0; i < MAX_CALLS; i++) 
     {
-
-        app_perror(THIS_FILE, "SDP negotiation has failed", status);
-
-        /* Here we should disconnect call if we're not in the middle 
-         * of initializing an UAS dialog and if this is not a re-INVITE.
-         */
-        return;
+        cleanup_call(&app.calls[i]);
     }
-
-    /* Get local and remote SDP.
-     * We need both SDPs to create a media session.
-     */
-    status = pjmedia_sdp_neg_get_active_local(inv->neg, &local_sdp);
-
-    status = pjmedia_sdp_neg_get_active_remote(inv->neg, &remote_sdp);
-
-
-    /* Create stream info based on the media audio SDP. */
-    status = pjmedia_stream_info_from_sdp(&stream_info, inv->dlg->pool,
-                                          app.g_med_endpt,
-                                          local_sdp, remote_sdp, 0);
-    if (status != PJ_SUCCESS) {
-        app_perror(THIS_FILE,"Unable to create audio stream info",status);
-        return;
-    }
-
-    /* If required, we can also change some settings in the stream info,
-     * (such as jitter buffer settings, codec settings, etc) before we
-     * create the stream.
-     */
-
-    /* Create new audio media stream, passing the stream info, and also the
-     * media socket that we created earlier.
-     */
-    status = pjmedia_stream_create(app.g_med_endpt, inv->dlg->pool, &stream_info,
-                                   g_med_transport[0], NULL, &g_med_stream);
-    if (status != PJ_SUCCESS) {
-        app_perror( THIS_FILE, "Unable to create audio stream", status);
-        return;
-    }
-
-    /* Start the audio stream */
-    status = pjmedia_stream_start(g_med_stream);
-    if (status != PJ_SUCCESS) {
-        app_perror( THIS_FILE, "Unable to start audio stream", status);
-        return;
-    }
-
-    /* Start the UDP media transport */
-    status = pjmedia_transport_media_start(g_med_transport[0], 0, 0, 0, 0);
-    if (status != PJ_SUCCESS) {
-        app_perror( THIS_FILE, "Unable to start UDP media transport", status);
-        return;
-    }
-
-    /* Get the media port interface of the audio stream. 
-     * Media port interface is basicly a struct containing get_frame() and
-     * put_frame() function. With this media port interface, we can attach
-     * the port interface to conference bridge, or directly to a sound
-     * player/recorder device.
-     */
-    status = pjmedia_stream_get_port(g_med_stream, &media_port);
-    if (status != PJ_SUCCESS) 
-    {
-        app_perror( THIS_FILE, "Unable to create media port interface of the audio stream", status);
-        return;
-    }
-
-    status = pjmedia_conf_add_port(app.mconf, app.pool,
-        media_port, NULL, &media_slot);
-    if (status != PJ_SUCCESS) 
-    {
-        pjmedia_port_destroy(app.wav_port);
-        app_perror(THIS_FILE, "Unable to add file to conference bridge",
-        status);
-        return;
-    }
-
-    // включаем однонаправленную преедачу от плеера к пользователю
-    status = pjmedia_conf_connect_port(app.mconf, app.wav_slot, media_slot, 0);
-    if (status != PJ_SUCCESS) 
-    {
-        app_perror(THIS_FILE, "Unable to connect slot writer_slot to wav_slot",
-        status);
-        return;
-    }
-
-    // // включаем однонаправленную преедачу от плеера к записывателю
-    // status = pjmedia_conf_connect_port(app.mconf, app.KPV_tone.tone_slot, app.writer_slot, 0);
-    // if (status != PJ_SUCCESS) 
-    // {
-    //     app_perror(THIS_FILE, "Unable to connect slot writer_slot to wav_slot",
-    //     status);
-    //     return;
-    // }
-
-
-    /* Done with media. */
-}
-
-static int worker_proc(void *arg)
-{
-    PJ_UNUSED_ARG(arg);
-
-    while (!app.quit) {
-        pj_time_val interval = { 0, 10 };
-        pjsip_endpt_handle_events(app.g_endpt, &interval);
-    }
-
-    return 0;
-}
-
-int main(int argc, char *argv[])
-{
-    app.pool = NULL;
-    pj_status_t status;
-    unsigned i;
-
-    pjmedia_snd_port *snd_port;
-    char tmp[10];
-
-    /* Must init PJLIB first: */
-    status = pj_init();
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-    pj_log_set_level(5);
-
-    /* Then init PJLIB-UTIL: */
-    status = pjlib_util_init();
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-
-    /* Must create a pool factory before we can allocate any memory. */
-    pj_caching_pool_init(&app.cp, &pj_pool_factory_default_policy, 0);
     
-    //app.pool = pj_pool_create(&app.cp.factory, "app", 16000, 16000, NULL);
-    app.snd_pool = pj_pool_create(&app.cp.factory, "snd", 16000, 16000, NULL);
-
-
-    PJ_LOG(3, (THIS_FILE, " "));
-    /* Create global endpoint: */
-    {
-        const pj_str_t *hostname;
-        const char *endpt_name;
-
-        /* Endpoint MUST be assigned a globally unique name.
-         * The name will be used as the hostname in Warning header.
-         */
-
-        /* For this implementation, we'll use hostname for simplicity */
-        hostname = pj_gethostname();
-        endpt_name = hostname->ptr;
-
-        /* Create the endpoint: */
-
-        status = pjsip_endpt_create(&app.cp.factory, endpt_name, 
-                                    &app.g_endpt);
-
-        PJ_LOG(3,(THIS_FILE, "HOSTNAME: %.*s", (int)hostname->slen, hostname->ptr));
-        PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
+    // Остановка мастер-порта
+    if (app.null_snd) {
+        pjmedia_master_port_stop(app.null_snd);
+        pjmedia_master_port_destroy(app.null_snd, PJ_FALSE);
     }
-
-
-    /* 
-     * Add UDP transport, with hard-coded port 
-     * Alternatively, application can use pjsip_udp_transport_attach() to
-     * start UDP transport, if it already has an UDP socket (e.g. after it
-     * resolves the address with STUN).
-     */
-    {
-        pj_sockaddr addr;
-        int af = AF;
-
-        pj_sockaddr_init(af, &addr, NULL, (pj_uint16_t)SIP_PORT);
-        
-        if (af == pj_AF_INET()) {
-            status = pjsip_udp_transport_start( app.g_endpt, &addr.ipv4, NULL, 
-                                                1, NULL);
-        } else if (af == pj_AF_INET6()) {
-            status = pjsip_udp_transport_start6(app.g_endpt, &addr.ipv6, NULL,
-                                                1, NULL);
-        } else {
-            status = PJ_EAFNOTSUP;
-        }
-
-        if (status != PJ_SUCCESS) {
-            app_perror(THIS_FILE, "Unable to start UDP transport", status);
-            return 1;
-        }
-    }
-
-
-
-    status = pjsip_tsx_layer_init_module(app.g_endpt);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-    status = pjsip_ua_init_module( app.g_endpt, NULL );
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-    {
-        pjsip_inv_callback inv_cb;
-
-        /* Init the callback for INVITE session: */
-        pj_bzero(&inv_cb, sizeof(inv_cb));
-        inv_cb.on_state_changed = &call_on_state_changed;
-        inv_cb.on_new_session = &call_on_forked;
-        inv_cb.on_media_update = &call_on_media_update;
-
-        /* Initialize invite session module:  */
-        status = pjsip_inv_usage_init(app.g_endpt, &inv_cb);
-        PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-    }
-
-    /* Initialize 100rel support */
-    status = pjsip_100rel_init_module(app.g_endpt);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
-
-    /*
-     * Register our module to receive incoming requests.
-     */
-    status = pjsip_endpt_register_module( app.g_endpt, &mod_simpleua);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-    /*
-     * Register message logger module.
-     */
-    status = pjsip_endpt_register_module( app.g_endpt, &msg_logger);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-
-    status = pjmedia_endpt_create(&app.cp.factory, NULL, 1, &app.g_med_endpt);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-    app.pool = pjmedia_endpt_create_pool(app.g_med_endpt, "Media pool", 16000, 16000);   
     
-    status = pjmedia_codec_g711_init(app.g_med_endpt);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-    // создание конференц-брниджа
-    status = pjmedia_conf_create(app.pool,
-            30,
-            CLOCK_RATE,
-            NCHANNELS, SAMPLES_PER_FRAME, BITS_PER_SAMPLE,
-            PJMEDIA_CONF_NO_DEVICE,
-            &app.mconf);
-
-    // создание и подключение мастер порта
-    status = create_and_connect_master_port();
-    if (status != PJ_SUCCESS) 
-    {
-        app_perror(THIS_FILE, "Unable create and connect master port (create_and_connect_master_port)", status);
-        return 1;
+    // Уничтожение портов
+    if (app.null_port) {
+        pjmedia_port_destroy(app.null_port);
     }
-
-    // инициалоизация тона
-    app.KPV_tone.tone.freq1 =         425;
-    app.KPV_tone.tone.freq2 =         0;
-    app.KPV_tone.tone.on_msec =       1000;
-    app.KPV_tone.tone.off_msec =      0;
-    app.KPV_tone.tone.volume =        0;
-    app.KPV_tone.tone.flags =         0;
-    app.KPV_tone.tone_slot =          -1;
-    app.KPV_tone.tone_pjmedia_port =   NULL;
-    app.KPV_tone.name =                pj_str("KPV_tone");
-    // создание и присоединение к бриджу тона
-    status = create_and_connect_tone_to_conf(&app.KPV_tone);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-     
-    // создание и присоединение к бриджу плеера 
-    status = create_and_connect_player_to_conf("output_4.wav");
-    if (status != PJ_SUCCESS) 
-    {
-        app_perror(THIS_FILE, "Unable create and connect player port", status);
-        return 1;
-    }
-
-    /* Create event manager */
-    status = pjmedia_event_mgr_create(app.pool, 0, NULL);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-    for (i = 0; i < PJ_ARRAY_SIZE(g_med_transport); ++i) 
-    {
-        status = pjmedia_transport_udp_create3(app.g_med_endpt, AF, NULL, NULL, 
-                                               RTP_PORT + i*2, 0, 
-                                               &g_med_transport[i]);
-        if (status != PJ_SUCCESS) 
-        {
-            app_perror(THIS_FILE, "Unable to create media transport", status);
-            return 1;
-        }
-
-        /* 
-         * Get socket info (address, port) of the media transport. We will
-         * need this info to create SDP (i.e. the address and port info in
-         * the SDP).
-         */
-        pjmedia_transport_info_init(&g_med_tpinfo[i]);
-        pjmedia_transport_get_info(g_med_transport[i], &g_med_tpinfo[i]);
-
-        pj_memcpy(&g_sock_info[i], &g_med_tpinfo[i].sock_info,
-                  sizeof(pjmedia_sock_info));
-    }
-
-
-    pj_thread_create(app.pool, "sipecho", &worker_proc, NULL, 0, 0,
-        &app.worker_thread);
-
-        
-    /* Sleep to allow log messages to flush */
-    pj_thread_sleep(10);
-
-        /* Loop until one call is completed */
-    // for (;;) 
-    // {
-    //     pj_time_val timeout = {0, 10};
-    //     pjsip_endpt_handle_events(app.g_endpt, &timeout);
-    // }
-
-    for (;;)
-    {
-        char s[10];
-
-        printf("\nMenu:\n"
-               "  h    Hangup all calls\n"
-               "  l    %s message logging\n"
-               "  q    Quit\n",
-               (app.enable_msg_logging? "Disable" : "Enable"));
-
-        if (fgets(s, sizeof(s), stdin) == NULL)
-            continue;
-
-        if (s[0]=='q')
-            break;
-        switch (s[0]) 
-        {
-        case 'l':
-            app.enable_msg_logging = !app.enable_msg_logging;
-            break;
-        }
-    }
-
-
-    // Отчистка ресусов
-    pjmedia_conf_disconnect_port(app.mconf, app.wav_slot, app.writer_slot);
-
-    if (app.wav_port) 
-    {
-        pjmedia_conf_remove_port(app.mconf, app.wav_slot);
+    
+    if (app.wav_port) {
         pjmedia_port_destroy(app.wav_port);
-        app.wav_port = NULL;
     }
-
-    if (app.writer_port) 
-    {
-        pjmedia_conf_remove_port(app.mconf, app.writer_slot);
+    
+    if (app.writer_port) {
         pjmedia_port_destroy(app.writer_port);
-        app.writer_port = NULL;
-    }
-
-    /* Останавливаем и уничтожаем мастер-порт */
-    status = pjmedia_master_port_stop(app.null_snd);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-
-    status = pjmedia_master_port_destroy(app.null_snd, PJ_FALSE);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-    app.null_snd = NULL;
-
-    status = pjmedia_port_destroy(app.null_port);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-    app.null_port = NULL;
-
-    /* Уничтожаем менеджер событий */
-    if (pjmedia_event_mgr_instance()) 
-    {
-        pjmedia_event_mgr_destroy(NULL);
-    }
-
-    /* Уничтожаем медиа-эндпоинт */
-    status = pjmedia_endpt_destroy(app.g_med_endpt);
-    app.g_med_endpt = NULL;
-
-    /* Уничтожаем SIP endpoint */
-    if (app.g_endpt) 
-    {
-        pjsip_endpt_destroy(app.g_endpt);
-        app.g_endpt = NULL;
-    }
-
-    if (app.worker_thread) 
-    {
-        pj_thread_join(app.worker_thread);
-        app.worker_thread = NULL;
-    }
-
-    /* Уничтожаем конференц-мост */
-    status = pjmedia_conf_destroy(app.mconf);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
-    app.mconf = NULL;
-
-    /* Освобождаем пулы памяти (в обратном порядке создания) */
-    if (app.snd_pool) 
-    {
-        pj_pool_release(app.snd_pool);
-        app.snd_pool = NULL;
     }
     
-    if (app.pool) 
-    {
+    // Уничтожение конференц-моста
+    if (app.conf) {
+        pjmedia_conf_destroy(app.conf);
+    }
+    
+    // Уничтожение медиа endpoint
+    if (app.med_endpt) {
+        pjmedia_endpt_destroy(app.med_endpt);
+    }
+    
+    // Уничтожение SIP endpoint
+    if (app.sip_endpt) {
+        pjsip_endpt_destroy(app.sip_endpt);
+    }
+    
+    // Освобождение пулов
+    if (app.pool) {
         pj_pool_release(app.pool);
-        app.pool = NULL;
+    }
+    
+    pj_caching_pool_destroy(&app.cp);
+    pj_shutdown();
+    
+    return PJ_SUCCESS;
+}
+
+static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
+{
+    PJ_LOG(3, (THIS_FILE, "AAA"));
+    
+    pj_status_t status;
+    pj_sockaddr hostaddr;
+    char temp[80], hostip[PJ_INET6_ADDRSTRLEN];
+    pj_str_t local_uri;
+    pjsip_dialog *dlg;
+    pjmedia_sdp_session *local_sdp;
+    pjsip_tx_data *tdata;
+    unsigned options = 0;
+    int call_idx = -1;
+
+    /* Обрабатываем только INVITE запросы */
+    if (rdata->msg_info.msg->line.req.method.id != PJSIP_INVITE_METHOD) 
+    {
+        /* Для всех остальных запросов (кроме ACK) отвечаем 500 */
+        if (rdata->msg_info.msg->line.req.method.id != PJSIP_ACK_METHOD) 
+        {
+            pj_str_t reason = pj_str("Simple UA unable to handle "
+                                     "this request");
+
+            pjsip_endpt_respond_stateless( app.sip_endpt, rdata, 
+                                           500, &reason,
+                                           NULL, NULL);
+        }
+        return PJ_TRUE;
     }
 
-    //PJ_LOG(1,(THIS_FILE, "2 Error occurred, cleaning up"));
+    /* Проверяем количество активных звонков */
+    // pj_mutex_lock(app.mutex);
+    for (int i = 0; i < MAX_CALLS; i++) 
+    {
+        if (!app.calls[i].in_use) 
+        {
+            call_idx = i;
+            break;
+        }
+    }
+    // pj_mutex_unlock(app.mutex);
 
-    /* Уничтожаем кэширующий пул */
-    pj_caching_pool_destroy(&app.cp);
+    if (call_idx == -1) 
+    {
+        /* Нет свободных слотов - отвечаем 486 Busy Here */
+        pj_str_t reason = pj_str("Too many calls");
+        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
+                                    500, &reason, NULL, NULL);
+        return PJ_TRUE;
+    }
 
-    //PJ_LOG(1,(THIS_FILE, "1 Error occurred, cleaning up"));
+    status = pjsip_inv_verify_request(rdata, &options, NULL, NULL,
+        app.sip_endpt, NULL);
+    if (status != PJ_SUCCESS) 
+    {
 
-    /* Завершаем работу PJLIB */
-    pj_shutdown();
+        pj_str_t reason = pj_str("Sorry Simple UA can not handle this INVITE");
 
-    //PJ_LOG(1,(THIS_FILE, "Error occurred, cleaning up"));
+        pjsip_endpt_respond_stateless( app.sip_endpt, rdata, 
+                                       500, &reason,
+                                       NULL, NULL);
+        return PJ_TRUE;
+    } 
 
+    /* Получаем IP-адрес сервера для Contact header */
+    if (pj_gethostip(pj_AF_INET(), &hostaddr) != PJ_SUCCESS) 
+    {
+        pj_str_t reason = pj_str("Server error");
+        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
+                                    500, &reason, NULL, NULL);
+        return PJ_TRUE;
+    }
 
-    return 0;
+    /* Формируем Contact URI */
+    pj_sockaddr_print(&hostaddr, hostip, sizeof(hostip), 2);
+    pj_ansi_snprintf(temp, sizeof(temp), "<sip:simpleuas@%s:%d>", hostip, SIP_PORT);
+    local_uri = pj_str(temp);
+
+    /* Создаем UAS dialog */
+    status = pjsip_dlg_create_uas_and_inc_lock(pjsip_ua_instance(),
+                                             rdata,
+                                             &local_uri,
+                                             &dlg);
+    if (status != PJ_SUCCESS) 
+    {
+        pj_str_t reason = pj_str("Failed to create dialog");
+        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
+                                    500, &reason, NULL, NULL);
+        return PJ_TRUE;
+    }
+
+    /* Создаем медиа транспорт для SDP оффера */
+    pjmedia_transport *transport;
+    // status = pjmedia_transport_udp_create(app.med_endpt, NULL, 
+    //                                      RTP_PORT + (call_idx * 2), 0, 
+    //                                      &transport);
+    status = pjmedia_transport_udp_create3(app.med_endpt, pj_AF_INET(), NULL, NULL, 
+                                            RTP_PORT + (call_idx * 2), 0, 
+                                            &transport);
+    if (status != PJ_SUCCESS) 
+    {
+        pjsip_dlg_dec_lock(dlg);
+        pj_str_t reason = pj_str("Media transport error");
+        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
+                                    500, &reason, NULL, NULL);
+        return PJ_TRUE;
+    }
+
+    /* Создаем SDP оффер */
+    pjmedia_sock_info sock_info;
+    pjmedia_transport_info tp_info;
+    pjmedia_transport_info_init(&tp_info);
+    pjmedia_transport_get_info(transport, &tp_info);
+    pj_memcpy(&sock_info, &tp_info.sock_info, sizeof(pjmedia_sock_info));
+
+    status = pjmedia_endpt_create_sdp(app.med_endpt, dlg->pool, //app.pool
+                                     1, &sock_info, &local_sdp);
+    if (status != PJ_SUCCESS) {
+        pjmedia_transport_close(transport);
+        pjsip_dlg_dec_lock(dlg);
+        pj_str_t reason = pj_str("SDP creation error");
+        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
+                                    500, &reason, NULL, NULL);
+        return PJ_TRUE;
+    }
+
+    /* Создаем INVITE сессию */
+    status = pjsip_inv_create_uas(dlg, rdata, local_sdp, 0, &app.calls[call_idx].inv);
+    if (status != PJ_SUCCESS) 
+    {
+        pjmedia_transport_close(transport);
+        pjsip_dlg_dec_lock(dlg);
+        pj_str_t reason = pj_str("Invite session error");
+        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
+                                    500, &reason, NULL, NULL);
+        return PJ_TRUE;
+    }
+
+    /* Сохраняем информацию о звонке */
+    // pj_mutex_lock(app.mutex);
+    app.calls[call_idx].in_use = PJ_TRUE;
+    app.calls[call_idx].transport = transport;
+    app.calls[call_idx].port = NULL;
+    app.calls[call_idx].slot = -1;
+    app.calls[call_idx].stream = NULL;
+    // pj_mutex_unlock(app.mutex);
+
+    pjsip_sip_uri *sip_uri_user = app.calls[call_idx].inv->dlg->target;
+
+    pjsip_sip_uri *sip_uri = (pjsip_sip_uri *) pjsip_uri_get_uri(rdata->msg_info.msg->line.req.uri);
+
+    app.calls[call_idx].sip_uri_target_user.ptr = (char*) pj_pool_alloc(app.pool , 256);
+    pj_strcpy(&app.calls[call_idx].sip_uri_target_user, &sip_uri->user);
+    
+    PJ_LOG(3,(THIS_FILE, "CALL TO %.*s!!", (int)app.calls[call_idx].sip_uri_target_user.slen, app.calls[call_idx].sip_uri_target_user.ptr));
+
+    /* Отправляем 180 Ringing */
+    status = pjsip_inv_initial_answer(app.calls[call_idx].inv, rdata, 
+                                    180, NULL, NULL, &tdata);
+    if (status != PJ_SUCCESS) 
+    {
+        pjsip_dlg_dec_lock(dlg);
+        return PJ_TRUE;
+    }
+    
+    status = pjsip_inv_send_msg(app.calls[call_idx].inv, tdata);
+    if (status != PJ_SUCCESS) 
+    {
+        pjsip_dlg_dec_lock(dlg);
+        return PJ_TRUE;
+    }
+    
+    /* Отправляем 200 OK */
+    status = pjsip_inv_answer(app.calls[call_idx].inv, 
+                            200, NULL, NULL, &tdata);
+    if (status != PJ_SUCCESS) {
+        pjsip_dlg_dec_lock(dlg);
+        return PJ_TRUE;
+    }
+    
+    status = pjsip_inv_send_msg(app.calls[call_idx].inv, tdata);
+    if (status != PJ_SUCCESS) {
+        pjsip_dlg_dec_lock(dlg);
+        return PJ_TRUE;
+    }
+
+    /* Разблокируем диалог */
+    pjsip_dlg_dec_lock(dlg);
+
+    return PJ_TRUE;
 }
 
 pj_status_t create_and_connect_master_port()
@@ -691,7 +706,7 @@ pj_status_t create_and_connect_master_port()
     }
 
     /* Get the port0 of the conference bridge. */
-    conf_port = pjmedia_conf_get_master_port(app.mconf); //pjmedia_conf_remove_port
+    conf_port = pjmedia_conf_get_master_port(app.conf); //pjmedia_conf_remove_port
     pj_assert(conf_port != NULL);
 
     /* Create master port, connecting port0 of the conference bridge to
@@ -731,7 +746,7 @@ pj_status_t create_and_connect_writer_to_conf(const char *filename)
         return status;
     }
 
-    status = pjmedia_conf_add_port(app.mconf, app.pool,
+    status = pjmedia_conf_add_port(app.conf, app.pool,
         app.writer_port, NULL, &app.writer_slot);
     if (status != PJ_SUCCESS) 
     {
@@ -759,7 +774,7 @@ pj_status_t create_and_connect_player_to_conf(const char *filename)
         return 1;
     }
 
-    status = pjmedia_conf_add_port(app.mconf, app.pool,
+    status = pjmedia_conf_add_port(app.conf, app.pool,
         app.wav_port, NULL, &app.wav_slot);
     if (status != PJ_SUCCESS) 
     {
@@ -773,13 +788,57 @@ pj_status_t create_and_connect_player_to_conf(const char *filename)
 
 }
 
+
+/* Инициализация всей системы */
+static pj_status_t init_system() 
+{
+    pj_status_t status;
+    
+    // Инициализация PJLIB
+    status = pj_init();
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+
+    pj_log_set_level(5);
+
+    status = pjlib_util_init();
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    /* Must create a pool factory before we can allocate any memory. */
+    pj_caching_pool_init(&app.cp, &pj_pool_factory_default_policy, 0);
+    
+    app.snd_pool = pj_pool_create(&app.cp.factory, "snd", 16000, 16000, NULL);
+    if (!app.snd_pool) return PJ_ENOMEM;
+    
+    // // Мьютекс для синхронизации
+    // status = pj_mutex_create(app.pool, "mutex", PJ_MUTEX_SIMPLE, &app.mutex);
+    // PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    
+    // Инициализация SIP стека
+    status = init_sip();
+    if (status != PJ_SUCCESS) return status;
+    
+    // Инициализация медиа системы
+    status = init_media();
+    if (status != PJ_SUCCESS) return status;
+    
+    // Инициализация массива звонков
+    for (int i = 0; i < MAX_CALLS; i++) 
+    {
+        app.calls[i].in_use = PJ_FALSE;
+    }
+
+    return PJ_SUCCESS;
+}
+
 pj_status_t create_and_connect_tone_to_conf(player_tone_t *player) 
 {
     pj_status_t status;
     char name[80];
     pj_str_t label;
 
-    pj_ansi_snprintf(name, sizeof(name), "tone-%d,%d", player->tone.freq1, player->tone.freq2);
+    pj_ansi_snprintf(name, sizeof(name), "tone-%d,%d,%d,%d", player->tone.freq1, player->tone.freq2, 
+        player->tone.off_msec, player->tone.on_msec);
+    
     label = pj_str(name);
 
     status = pjmedia_tonegen_create2(app.pool, &label, CLOCK_RATE, NCHANNELS, SAMPLES_PER_FRAME, 
@@ -790,7 +849,7 @@ pj_status_t create_and_connect_tone_to_conf(player_tone_t *player)
         return status;
     }
 
-    status = pjmedia_conf_add_port(app.mconf, app.pool,
+    status = pjmedia_conf_add_port(app.conf, app.pool,
         player->tone_pjmedia_port, NULL, &player->tone_slot);
     if (status != PJ_SUCCESS) 
     {
@@ -812,156 +871,175 @@ pj_status_t create_and_connect_tone_to_conf(player_tone_t *player)
     return PJ_SUCCESS;
 }
 
-static pj_bool_t on_rx_request( pjsip_rx_data *rdata )
+/* Обработчик обновления медиа */
+static void call_on_media_update(pjsip_inv_session *inv, pj_status_t status) 
 {
-    pj_sockaddr hostaddr;
-    char temp[80], hostip[PJ_INET6_ADDRSTRLEN];
-    pj_str_t local_uri;
-    pjsip_dialog *dlg;
-    pjmedia_sdp_session *local_sdp;
-    pjsip_tx_data *tdata;
-    unsigned options = 0;
-    pj_status_t status;
-
-
-    /* 
-     * Respond (statelessly) any non-INVITE requests with 500 
-     */
-    if (rdata->msg_info.msg->line.req.method.id != PJSIP_INVITE_METHOD) {
-
-        if (rdata->msg_info.msg->line.req.method.id != PJSIP_ACK_METHOD) {
-            pj_str_t reason = pj_str("Simple UA unable to handle "
-                                     "this request");
-
-            pjsip_endpt_respond_stateless( app.g_endpt, rdata, 
-                                           500, &reason,
-                                           NULL, NULL);
-        }
-        return PJ_TRUE;
-    }
-
-
-    /*
-     * Reject INVITE if we already have an INVITE session in progress.
-     */
-    if (g_inv) {
-
-        pj_str_t reason = pj_str("Another call is in progress");
-
-        pjsip_endpt_respond_stateless( app.g_endpt, rdata, 
-                                       500, &reason,
-                                       NULL, NULL);
-        return PJ_TRUE;
-
-    }
-
-    /* Verify that we can handle the request. */
-    status = pjsip_inv_verify_request(rdata, &options, NULL, NULL,
-        app.g_endpt, NULL);
-    if (status != PJ_SUCCESS) {
-
-        pj_str_t reason = pj_str("Sorry Simple UA can not handle this INVITE");
-
-        pjsip_endpt_respond_stateless( app.g_endpt, rdata, 
-                                       500, &reason,
-                                       NULL, NULL);
-        return PJ_TRUE;
-    } 
-
-    /*
-     * Generate Contact URI
-     */
-    if (pj_gethostip(AF, &hostaddr) != PJ_SUCCESS) {
-        app_perror(THIS_FILE, "Unable to retrieve local host IP", status);
-        return PJ_TRUE;
-    }
-    pj_sockaddr_print(&hostaddr, hostip, sizeof(hostip), 2);
-
-    pj_ansi_snprintf(temp, sizeof(temp), "<sip:simpleuas@%s:%d>", 
-                    hostip, SIP_PORT);
-    local_uri = pj_str(temp);
-
-    /*
-     * Create UAS dialog.
-     */
-    status = pjsip_dlg_create_uas_and_inc_lock( pjsip_ua_instance(),
-                                                rdata,
-                                                &local_uri, /* contact */
-                                                &dlg);
-    if (status != PJ_SUCCESS) {
-        pjsip_endpt_respond_stateless(app.g_endpt, rdata, 500, NULL,
-                                      NULL, NULL);
-        return PJ_TRUE;
-    }
-
-    /* 
-     * Get media capability from media endpoint: 
-     */
-
-    status = pjmedia_endpt_create_sdp( app.g_med_endpt, app.pool,
-                                       1, g_sock_info, &local_sdp);
-    pj_assert(status == PJ_SUCCESS);
     if (status != PJ_SUCCESS) 
     {
-        pjsip_dlg_dec_lock(dlg);
-        return PJ_TRUE;
+        PJ_LOG(3,(THIS_FILE, "Media update failed: %d", status));
+        return;
     }
+    
+    // pj_mutex_lock(app.mutex);
+    
+    // Находим слот
+    int call_idx = -1;
+    for (int i = 0; i < MAX_CALLS; i++) 
+    {
+        if ( (app.calls[i].inv == inv) && (app.calls[i].in_use) ) 
+        {
+            PJ_LOG(3,(THIS_FILE, "НАЙДЕНО да INV == INV: %d", i));
+            call_idx = i;
+            break;
+        }
+    }
+    
+    // Настраиваем звонок
+    call_t *call = &app.calls[call_idx];
+    
+    // Добавляем медиа к звонку
+    status = add_media_to_call(call);
+    if (status != PJ_SUCCESS) 
+    {
+        call->in_use = PJ_FALSE;
+        call->inv = NULL;
+    }
+    
+    // pj_mutex_unlock(app.mutex);
+}
 
-
-    /* 
-     * Create invite session, and pass both the UAS dialog and the SDP
-     * capability to the session.
-     */
-    status = pjsip_inv_create_uas( dlg, rdata, local_sdp, 0, &g_inv);
-    pj_assert(status == PJ_SUCCESS);
+/* Добавление медиа к звонку */
+static pj_status_t add_media_to_call(call_t *call) 
+{
+    pj_status_t status;
+    pjmedia_stream_info stream_info;
+    const pjmedia_sdp_session *local_sdp, *remote_sdp;
+    
+    // Получаем SDP информацию
+    pjmedia_sdp_neg_get_active_local(call->inv->neg, &local_sdp);
+    pjmedia_sdp_neg_get_active_remote(call->inv->neg, &remote_sdp);
+    
+    status = pjmedia_stream_info_from_sdp(&stream_info, call->inv->dlg->pool,
+                                        app.med_endpt, local_sdp, remote_sdp, 0);
     if (status != PJ_SUCCESS) {
-        pjsip_dlg_dec_lock(dlg);
-        return PJ_TRUE;
+        PJ_LOG(3,(THIS_FILE, "Failed to create stream info"));
+        return status;
+    }
+    
+    // // Создаем транспорт для медиа
+    // status = pjmedia_transport_udp_create(app.med_endpt, NULL, RTP_PORT, 0, &call->transport);
+    // if (status != PJ_SUCCESS) 
+    // {
+    //     PJ_LOG(3,(THIS_FILE, "Failed to create media transport"));
+    //     return status;
+    // }
+    
+    // Создаем медиа поток
+    status = pjmedia_stream_create(app.med_endpt, call->inv->dlg->pool, &stream_info,
+                                 call->transport, NULL, &call->stream);
+    if (status != PJ_SUCCESS) {
+        PJ_LOG(3,(THIS_FILE, "Failed to create stream"));
+        pjmedia_transport_close(call->transport);
+        return status;
+    }
+    
+    // Запускаем поток
+    status = pjmedia_stream_start(call->stream);
+    if (status != PJ_SUCCESS) {
+        PJ_LOG(3,(THIS_FILE, "Failed to start stream"));
+        pjmedia_stream_destroy(call->stream);
+        pjmedia_transport_close(call->transport);
+        return status;
+    }
+    
+    /* Start the UDP media transport */
+    status = pjmedia_transport_media_start(call->transport, 0, 0, 0, 0);
+    if (status != PJ_SUCCESS) 
+    {
+        app_perror( THIS_FILE, "Unable to start UDP media transport", status);
+        return;
     }
 
-    /*
-     * Invite session has been created, decrement & release dialog lock.
-     */
-    pjsip_dlg_dec_lock(dlg);
+    // Получаем медиа порт
+    status = pjmedia_stream_get_port(call->stream, &call->port);
+    if (status != PJ_SUCCESS) 
+    {
+        PJ_LOG(3,(THIS_FILE, "Failed to get media port"));
+        pjmedia_stream_destroy(call->stream);
+        pjmedia_transport_close(call->transport);
+        return status;
+    }
+    
+    // Добавляем в конференц-мост
+    status = pjmedia_conf_add_port(app.conf, call->inv->dlg->pool,
+                                 call->port, NULL, &call->slot);
+    if (status != PJ_SUCCESS) {
+        PJ_LOG(3,(THIS_FILE, "Failed to add to conference"));
+        pjmedia_port_destroy(call->port);
+        pjmedia_stream_destroy(call->stream);
+        pjmedia_transport_close(call->transport);
+        return status;
+    }
+    
 
+    if ( (pj_strcmp( &(call->sip_uri_target_user), &(app.wav_player_name) ) == 0 ))
+    {
+        // Подключаем к WAV плееру
+        if (app.wav_port) 
+        {
+            status = pjmedia_conf_connect_port(app.conf, app.wav_slot, call->slot, 0);
+            if (status != PJ_SUCCESS) 
+            {
+                PJ_LOG(3,(THIS_FILE, "Failed to connect to WAV player"));
+            }
+        }
+    }
+    else  if ((pj_strcmp( &(call->sip_uri_target_user), &(app.long_tone_player_name) ) == 0 ))
+    {
+        // Подключаем к WAV плееру
+        if (app.wav_port) 
+        {
+            status = pjmedia_conf_connect_port(app.conf, app.long_tone.tone_slot, call->slot, 0);
+            if (status != PJ_SUCCESS) 
+            {
+                PJ_LOG(3,(THIS_FILE, "Failed to connect to WAV player"));
+            }
+        }
+    }
+    else  if ((pj_strcmp( &(call->sip_uri_target_user), &(app.KVP_tone_player_name) ) == 0 ))
+    {
+        // Подключаем к WAV плееру
+        if (app.wav_port) 
+        {
+            status = pjmedia_conf_connect_port(app.conf, app.KVP_tone.tone_slot, call->slot, 0);
+            if (status != PJ_SUCCESS) 
+            {
+                PJ_LOG(3,(THIS_FILE, "Failed to connect to WAV player"));
+            }
+        }
+    }
+    else PJ_LOG(3,(THIS_FILE, "NO TARGET_USER == PLAYER_NAME"));
+    
+    // // Подключаем к WAV рекордеру
+    // if (app.writer_port) {
+    //     status = pjmedia_conf_connect_port(app.conf, call->slot, app.writer_slot, 0);
+    //     if (status != PJ_SUCCESS) {
+    //         PJ_LOG(3,(THIS_FILE, "Failed to connect to WAV recorder"));
+    //     }
+    // }
+    
+    return PJ_SUCCESS;
+}
 
-    /*
-     * Initially send 180 response.
-     *
-     * The very first response to an INVITE must be created with
-     * pjsip_inv_initial_answer(). Subsequent responses to the same
-     * transaction MUST use pjsip_inv_answer().
-     */
-    status = pjsip_inv_initial_answer(g_inv, rdata, 
-                                      180, 
-                                      NULL, NULL, &tdata);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, PJ_TRUE);
+static int worker_proc(void *arg)
+{
+    PJ_UNUSED_ARG(arg);
 
+    while (!app.quit) 
+    {
+        pj_time_val interval = { 0, 10 };
+        pjsip_endpt_handle_events(app.sip_endpt, &interval);
+    }
 
-    /* Send the 180 response. */  
-    status = pjsip_inv_send_msg(g_inv, tdata); 
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, PJ_TRUE);
-
-
-    /*
-     * Now create 200 response.
-     */
-    status = pjsip_inv_answer( g_inv, 
-                               200, NULL,       /* st_code and st_text */
-                               NULL,            /* SDP already specified */
-                               &tdata);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, PJ_TRUE);
-
-    /*
-     * Send the 200 response.
-     */
-    status = pjsip_inv_send_msg(g_inv, tdata);
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, PJ_TRUE);
-
-
-    /* Done. 
-     * When the call is disconnected, it will be reported via the callback.
-     */
-
-    return PJ_TRUE;
+    return 0;
 }
