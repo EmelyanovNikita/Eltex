@@ -52,7 +52,7 @@
   </send>
 
   <!-- Пауза 8 секунд -->
-  <pause milliseconds="5000"/>
+  <pause milliseconds="15000"/>
 
   <!-- Ожидаем BYE от удаленной стороны -->
   <recv request="BYE" rtd="true">
