@@ -8,9 +8,9 @@
 
 #include "util.h"
 
-#define THIS_FILE   "consecutive_calls_test.c"
-#define CLOCK_RATE          16000
-#define SAMPLES_PER_FRAME   (CLOCK_RATE/100)
+#define THIS_FILE           "calls.c"
+#define CLOCK_FREQ          16000
+#define SAMPLES_PER_FRAME   (CLOCK_FREQ/100)
 #define BITS_PER_SAMPLE     16
 #define NCHANNELS           1
 #define MAX_CALLS           30
@@ -29,14 +29,15 @@
 
 typedef struct 
 {
-    pjmedia_tone_desc     tone;
-    unsigned              tone_slot;
-    pjmedia_port         *tone_pjmedia_port;
+    pjmedia_tone_desc   tone;
+    unsigned            tone_slot;
+    pjmedia_port        *tone_pjmedia_port;
 } player_tone_t;
 
 typedef struct call_t 
 {
     pjsip_inv_session           *inv;
+    pjsip_dialog                *dlg;
     pjmedia_stream              *stream;
     pjmedia_port                *port;
     unsigned                    slot;
@@ -65,24 +66,21 @@ static struct app_t
     pj_str_t                    long_tone_player_name;
     player_tone_t               long_tone;
 
-    pj_str_t                    KVP_tone_player_name;
-    player_tone_t               KVP_tone;
+    pj_str_t                    kvp_tone_player_name;
+    player_tone_t               kvp_tone;
 
-    pjmedia_port                *writer_port;
     unsigned                    writer_slot;
     call_t                      calls[MAX_CALLS];
     pj_thread_t                 *worker_thread;
     pj_bool_t                   quit;
-    //pj_mutex_t                  *mutex;
+    pj_mutex_t                  *mutex;
 
     int                         free_timer_id;
 } app;
 
 /* Прототипы функций */
 
-// все ининциализации
 static pj_status_t init_system();
-static pj_status_t init_pjlib();
 static pj_status_t init_sip();
 static pj_status_t init_media();
 
@@ -115,8 +113,11 @@ static void call_on_forked(pjsip_inv_session *inv, pjsip_event *e);
 static int get_new_timer_id();
 
 // callback для таймеров
-static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
-static void call_media_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
+static void ringing_timeout_cb(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
+static void call_media_timeout_cb(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry);
+
+// логирование возвращаемого значения
+static int log_returned_status(const char *object, pj_status_t status);
 
 
 
@@ -201,7 +202,7 @@ static pjsip_module msg_logger =
 
 
 /* Основная функция */
-int main(int argc, char *argv[]) 
+int main() 
 {
     pj_status_t status;
     
@@ -229,10 +230,10 @@ int main(int argc, char *argv[])
 
     // задаём название плеера и тонов, на эти номера будет звонить клиент и в 
     // зависимости от того ком набрал клиент ему будет производиться соответсвующтие звуки в трубку
-    app.wav_player_name = pj_str("WAV_file");
+    app.wav_player_name = pj_str("100");
 
     // создание и присоединение к бриджу плеера 
-    status = create_and_connect_player_to_conf("output_file.wav");
+    status = create_and_connect_player_to_conf("output_4.wav");
     if (status != PJ_SUCCESS) 
     {
         app_perror(THIS_FILE, "Unable create and connect player port", status);
@@ -248,25 +249,25 @@ int main(int argc, char *argv[])
     app.long_tone.tone.flags =           0;
     app.long_tone.tone_slot =            -1;
     app.long_tone.tone_pjmedia_port =   NULL;
-    app.long_tone_player_name =         pj_str("long_tone");
+    app.long_tone_player_name =         pj_str("200");
 
     // создание и присоединение к бриджу тона
     status = create_and_connect_tone_to_conf(&app.long_tone);
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
 
     // инициализация тона
-    app.KVP_tone.tone.freq1 =           425;
-    app.KVP_tone.tone.freq2 =           0;
-    app.KVP_tone.tone.on_msec =         1000;
-    app.KVP_tone.tone.off_msec =        4000;
-    app.KVP_tone.tone.volume =          0;
-    app.KVP_tone.tone.flags =           0;
-    app.KVP_tone.tone_slot =            -1;
-    app.KVP_tone.tone_pjmedia_port =   NULL;
-    app.KVP_tone_player_name =         pj_str("KVP_tone");
+    app.kvp_tone.tone.freq1 =           425;
+    app.kvp_tone.tone.freq2 =           0;
+    app.kvp_tone.tone.on_msec =         1000;
+    app.kvp_tone.tone.off_msec =        4000;
+    app.kvp_tone.tone.volume =          0;
+    app.kvp_tone.tone.flags =           0;
+    app.kvp_tone.tone_slot =            -1;
+    app.kvp_tone.tone_pjmedia_port =   NULL;
+    app.kvp_tone_player_name =         pj_str("300");
 
     // создание и присоединение к бриджу тона
-    status = create_and_connect_tone_to_conf(&app.KVP_tone);
+    status = create_and_connect_tone_to_conf(&app.kvp_tone);
 
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
     /* Create event manager */
@@ -295,27 +296,6 @@ int main(int argc, char *argv[])
     // Очистка
     cleanup_resources();
     return 0;
-}
-
-/* Инициализация PJLIB */
-static pj_status_t init_pjlib() 
-{
-    pj_status_t status;
-    
-    status = pj_init();
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
-    
-    status = pjlib_util_init();
-    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
-    
-    pj_caching_pool_init(&app.cp, NULL, 0);
-    app.pool = pj_pool_create(&app.cp.factory, "app", 4000, 4000, NULL);
-    if (!app.pool) return PJ_ENOMEM;
-    
-    // status = pj_mutex_create(app.pool, "mutex", PJ_MUTEX_SIMPLE, &app.mutex);
-    // PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
-    
-    return PJ_SUCCESS;
 }
 
 /* Инициализация SIP стека */
@@ -384,7 +364,7 @@ static pj_status_t init_media()
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
     
     // Создание конференц-моста
-    status = pjmedia_conf_create(app.pool, MAX_CALLS+4, CLOCK_RATE, 
+    status = pjmedia_conf_create(app.pool, MAX_CALLS+4, CLOCK_FREQ, 
                                 NCHANNELS, SAMPLES_PER_FRAME, 
                                 BITS_PER_SAMPLE, PJMEDIA_CONF_NO_DEVICE, &app.conf);                    
     if (status != PJ_SUCCESS) return status;
@@ -400,111 +380,102 @@ static pj_status_t init_media()
 }
 
 /* Обработчик изменения состояния звонка */
-static void call_on_state_changed(pjsip_inv_session *inv, pjsip_event *e) 
+static void call_on_state_changed(pjsip_inv_session *inv, pjsip_event *event) 
 {
-    PJ_UNUSED_ARG(e);
+    PJ_UNUSED_ARG(event);
     
+    PJ_LOG(3, (THIS_FILE, "IN call_on_state_changed"));
+
+    if (inv->state == PJSIP_INV_STATE_NULL)
+        PJ_LOG(3, (THIS_FILE, "PJSIP_INV_STATE_NULL"));
+    if (inv->state == PJSIP_INV_STATE_CALLING)
+        PJ_LOG(3, (THIS_FILE, "PJSIP_INV_STATE_CALLING"));
+    if (inv->state == PJSIP_INV_STATE_INCOMING)
+        PJ_LOG(3, (THIS_FILE, "PJSIP_INV_STATE_INCOMING"));
+    if (inv->state == PJSIP_INV_STATE_EARLY)
+        PJ_LOG(3, (THIS_FILE, "PJSIP_INV_STATE_EARLY"));
+    if (inv->state == PJSIP_INV_STATE_CONNECTING)
+        PJ_LOG(3, (THIS_FILE, "PJSIP_INV_STATE_CONNECTING"));
+    if (inv->state == PJSIP_INV_STATE_CONFIRMED)
+        PJ_LOG(3, (THIS_FILE, "PJSIP_INV_STATE_CONFIRMED"));
+    if (inv->state == PJSIP_INV_STATE_DISCONNECTED)
+        PJ_LOG(3, (THIS_FILE, "PJSIP_INV_STATE_DISCONNECTED"));
+
     if (inv->state == PJSIP_INV_STATE_DISCONNECTED) 
     {
-        // pj_mutex_lock(app.mutex);
+        // PJ_LOG(3, (THIS_FILE, "IN call_on_state_changed WITH PJSIP_INV_STATE_DISCONNECTED"));
+        pj_mutex_lock(app.mutex);
         
         // Находим звонок в массиве
         for (int i = 0; i < MAX_CALLS; i++) 
         {
             if (app.calls[i].inv == inv && app.calls[i].in_use) 
             {
+                PJ_LOG(3, (THIS_FILE, "CALL %d - IS CLEANING NOW", app.calls[i].slot));
                 cleanup_call(&app.calls[i]);
+                PJ_LOG(3, (THIS_FILE, "CALL WAS CLEANED"));
                 break;
             }
         }
         
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
     }
 }
-
-// static pj_status_t cleanup_call(call_t *call) {
-//     pj_status_t status;
-//     if (!call->in_use) return PJ_SUCCESS;
-    
-//     // Отменяем таймеры в первую очередь
-//     if (call->ringing_timer.id) {
-//         pjsip_endpt_cancel_timer(app.sip_endpt, &call->ringing_timer);
-//         call->ringing_timer.id = 0;
-//     }
-    
-//     if (call->call_media_timer.id) {
-//         pjsip_endpt_cancel_timer(app.sip_endpt, &call->call_media_timer);
-//         call->call_media_timer.id = 0;
-//     }
-
-//     // Останавливаем медиа
-//     if (call->slot != (unsigned)-1) {
-//         pjmedia_conf_remove_port(app.conf, call->slot);
-//         call->slot = (unsigned)-1;
-//     }
-    
-//     if (call->port) {
-//         pjmedia_port_destroy(call->port);
-//         call->port = NULL;
-//     }
-
-//     if (call->stream) {
-//         pjmedia_stream_destroy(call->stream);
-//         call->stream = NULL;
-//     }
-
-//     if (call->transport) {
-//         pjmedia_transport_close(call->transport);
-//         call->transport = NULL;
-//     }
-
-//     call->in_use = PJ_FALSE;
-//     call->inv = NULL;
-    
-//     return PJ_SUCCESS;
-// }
-
 /* Очистка звонка */
 static pj_status_t cleanup_call(call_t *call) 
 {
     pj_status_t status;
     if (!call->in_use) return PJ_SUCCESS;
-    
+
+    PJ_LOG(3, (THIS_FILE, "pjmedia_conf_remove_port - DONE"));
+
+    if (call->inv && call->inv->dlg) 
+    {
+        status = pjsip_inv_terminate(call->inv, PJSIP_SC_OK, PJ_FALSE);
+
+        log_returned_status("pjsip_inv_terminate", status);
+    }
+
     if (call->port && call->slot != (unsigned)-1) 
     {
-        pjmedia_conf_remove_port(app.conf, call->slot);
-        PJ_LOG(3, (THIS_FILE, "pjmedia_conf_remove_port - DONE"));
+        status = pjmedia_conf_remove_port(app.conf, call->slot);
+
+        log_returned_status("pjmedia_conf_remove_port", status);
     }
     
-    if (call->port) 
+    // if (call->port) 
+    // {
+    //     pjmedia_port_destroy(call->port);
+    //     PJ_LOG(3, (THIS_FILE, "pjmedia_port_destroy - DONE"));
+    // }
+    
+    if (call->stream) 
     {
-        pjmedia_port_destroy(call->port);
-        PJ_LOG(3, (THIS_FILE, "pjmedia_port_destroy - DONE"));
+        status = pjmedia_stream_destroy(call->stream);
+
+        log_returned_status("pjmedia_stream_destroy", status);
     }
-    
-    // // if (call->stream) 
-    // // {
-    // //     pjmedia_stream_destroy(call->stream);
-    // //     PJ_LOG(3, (THIS_FILE, "pjmedia_stream_destroy - DONE"));
-    // // }
 
     if (call->transport) 
     {
         status = pjmedia_transport_close(call->transport);
-        PJ_LOG(3, (THIS_FILE, "pjmedia_transport_close - DONE"));
+        
+        log_returned_status("pjmedia_transport_close", status);
     }
 
-    if (call->ringing_timer.id) 
+    if (call->ringing_timer.id != PJ_FALSE) 
     {
         pjsip_endpt_cancel_timer(app.sip_endpt, &call->ringing_timer);
+        PJ_LOG(3, (THIS_FILE, "pjsip_endpt_cancel_timer : ringing_timer - DONE"));
     }
 
-    if (call->call_media_timer.id) 
+    if (call->call_media_timer.id != PJ_FALSE) 
     {
         pjsip_endpt_cancel_timer(app.sip_endpt, &call->call_media_timer);
+        PJ_LOG(3, (THIS_FILE, "pjsip_endpt_cancel_timer : call_media_timer - DONE"));
     }
 
-    call->sip_uri_target_user;
+    // call->sip_uri_target_user;
     
     call->in_use = PJ_FALSE;
     call->inv = NULL;
@@ -527,56 +498,111 @@ static void call_on_forked(pjsip_inv_session *inv, pjsip_event *e)
 /* Очистка всех ресурсов */
 static pj_status_t cleanup_resources() 
 {
-    // Очистка всех звонков
+    pj_status_t status;
+
+    // очистка всех звонков
     for (int i = 0; i < MAX_CALLS; i++) 
     {
         cleanup_call(&app.calls[i]);
     }
     
-    // Остановка мастер-порта
-    if (app.null_snd) {
+    // отчистка мьютекса
+    if (app.mutex)
+    {
+        status = pj_mutex_destroy(app.mutex);
+        app.mutex = NULL;
+        log_returned_status("pj_mutex_destroy", status);
+    }
+
+    // остановка мастер-порта
+    if (app.null_snd) 
+    {
         pjmedia_master_port_stop(app.null_snd);
+        log_returned_status("pjmedia_master_port_stop", status);
+
         pjmedia_master_port_destroy(app.null_snd, PJ_FALSE);
+        log_returned_status("pjmedia_master_port_destroy", status);
     }
     
     // Уничтожение портов
-    if (app.null_port) {
+    if (app.null_port) 
+    {
         pjmedia_port_destroy(app.null_port);
+        log_returned_status("pjmedia_port_destroy", status);
     }
     
     if (app.wav_port) 
     {
         pjmedia_port_destroy(app.wav_port);
+        log_returned_status("pjmedia_port_destroy", status);
+    }
+
+    // if (app.long_tone.tone_pjmedia_port)
+    // {
+    //        pjmedia_tonegen_stop(app.long_tone.tone_pjmedia_port);
+    //     // pjmedia_conf_disconnect_port(app.conf, app.long_tone.tone_slot, app.writer_slot); 
+    // }
+
+    // if (app.long_tone.tone_slot != -1)
+    // {
+    //     tonegen_destroy(app.long_tone.tone_slot);
+    //     app.long_tone.tone_slot = -1;
+    // }
+    if (app.long_tone.tone_pjmedia_port)
+    {
+        pjmedia_conf_remove_port(app.conf, (unsigned)app.long_tone.tone_slot);
+        log_returned_status("pjmedia_conf_remove_port", status);
+        
+        pjmedia_port_destroy(app.long_tone.tone_pjmedia_port);
+        log_returned_status("pjmedia_port_destroy", status);
+        app.long_tone.tone_pjmedia_port = NULL;
     }
     
-    if (app.writer_port) 
+    if (app.kvp_tone.tone_pjmedia_port)
     {
-        pjmedia_port_destroy(app.writer_port);
+        pjmedia_conf_remove_port(app.conf, (unsigned)app.kvp_tone.tone_slot);
+        log_returned_status("pjmedia_conf_remove_port", status);
+
+        pjmedia_port_destroy(app.kvp_tone.tone_pjmedia_port);
+        log_returned_status("pjmedia_port_destroy", status);
     }
+
     
     // Уничтожение конференц-моста
     if (app.conf) 
     {
         pjmedia_conf_destroy(app.conf);
+        log_returned_status("pjmedia_conf_destroy", status);
     }
     
+    /* Destroy event manager */
+    pjmedia_event_mgr_destroy(NULL); 
+
     // Уничтожение медиа endpoint
     if (app.med_endpt) 
     {
         pjmedia_endpt_destroy(app.med_endpt);
+        log_returned_status("pjmedia_endpt_destroy", status);
     }
     
     // Уничтожение SIP endpoint
     if (app.sip_endpt) 
     {
         pjsip_endpt_destroy(app.sip_endpt);
+        log_returned_status("pjsip_endpt_destroy", status);
     }
     
     // Освобождение пулов
-    if (app.pool) {
+    if (app.pool) 
+    {
         pj_pool_release(app.pool);
     }
-    
+
+    if (app.snd_pool) 
+    {
+        pj_pool_release(app.snd_pool);
+    }
+
     pj_caching_pool_destroy(&app.cp);
     pj_shutdown();
     
@@ -585,7 +611,7 @@ static pj_status_t cleanup_resources()
 
 static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
 {
-    PJ_LOG(3, (THIS_FILE, "AAA"));
+    // PJ_LOG(3, (THIS_FILE, "AAA"));
     
     pj_status_t status;
     pj_sockaddr hostaddr;
@@ -614,9 +640,9 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
         return PJ_TRUE;
     }
 
-    /* Проверяем количество активных звонков */
+    /* проверяем количество активных звонков */
 
-    // pj_mutex_lock(app.mutex);
+    pj_mutex_lock(app.mutex);
     for (int i = 0; i < MAX_CALLS; i++) 
     {
         if (!app.calls[i].in_use) 
@@ -625,31 +651,29 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
             break;
         }
     }
-    // pj_mutex_unlock(app.mutex);
 
     if (call_idx == -1) 
     {
-        /* Нет свободных слотов - отвечаем 500 */
+        /* нет свободных - отвечаем 486 */
         pj_str_t reason = pj_str("Too many calls");
         pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
-                                    500, &reason, NULL, NULL);
+                                    486, &reason, NULL, NULL);
 
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
+
         return PJ_TRUE;
     }
     
     // получаем target uri
     pjsip_sip_uri *sip_uri = (pjsip_sip_uri *) pjsip_uri_get_uri(rdata->msg_info.msg->line.req.uri);
 
-    /* Проверяем правильность набранного номера */
-
-
-    PJ_LOG(3, (THIS_FILE, "wav: %d", pj_strcmp(&(sip_uri->user), &(app.wav_player_name)) ) );
-    PJ_LOG(3, (THIS_FILE, "wav: %d", pj_strcmp(&(sip_uri->user), &(app.long_tone_player_name)) ) );
-    PJ_LOG(3, (THIS_FILE, "wav: %d", pj_strcmp(&(sip_uri->user), &(app.KVP_tone_player_name)) ) );
+    // проверяем правильность набранного номера 
+    // PJ_LOG(3, (THIS_FILE, "wav: %d", pj_strcmp(&(sip_uri->user), &(app.wav_player_name)) ) );
+    // PJ_LOG(3, (THIS_FILE, "wav: %d", pj_strcmp(&(sip_uri->user), &(app.long_tone_player_name)) ) );
+    // PJ_LOG(3, (THIS_FILE, "wav: %d", pj_strcmp(&(sip_uri->user), &(app.kvp_tone_player_name)) ) );
     if ( !( ( ( pj_strcmp( &(sip_uri->user), &(app.wav_player_name) ) ) == 0 ) ||
         ( ( pj_strcmp( &(sip_uri->user), &(app.long_tone_player_name) ) ) == 0 ) ||
-        ( ( pj_strcmp( &(sip_uri->user), &(app.KVP_tone_player_name) ) ) == 0 ) ) )
+        ( ( pj_strcmp( &(sip_uri->user), &(app.kvp_tone_player_name) ) ) == 0 ) ) )
     {
         // если не правильно набран номер, отвечаем 500
         pj_str_t reason = pj_str("The number is dialed incorrectly");
@@ -658,7 +682,7 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
     
         PJ_LOG(3,(THIS_FILE, "CALL TO %.*s!!", (int)sip_uri->user.slen, sip_uri->user.ptr));
 
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
 
         return PJ_TRUE;
     }
@@ -674,7 +698,7 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
                                        500, &reason,
                                        NULL, NULL);
         
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
 
         return PJ_TRUE;
     } 
@@ -686,14 +710,14 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
         pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
                                     500, &reason, NULL, NULL);
         
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
 
         return PJ_TRUE;
     }
 
     /* Формируем Contact URI */
     pj_sockaddr_print(&hostaddr, hostip, sizeof(hostip), 2);
-    pj_ansi_snprintf(temp, sizeof(temp), "<sip:simpleuas@%s:%d>", hostip, SIP_PORT);
+    pj_ansi_snprintf(temp, sizeof(temp), "<sip:%.*s@%s:%d>", (int)sip_uri->user.slen, sip_uri->user.ptr, hostip, SIP_PORT);
     local_uri = pj_str(temp);
 
     /* Создаем UAS dialog */
@@ -707,7 +731,7 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
         pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
                                     500, &reason, NULL, NULL);
         
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
 
         return PJ_TRUE;
     }
@@ -725,7 +749,7 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
         pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
                                     500, &reason, NULL, NULL);
         
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
         
         return PJ_TRUE;
     }
@@ -747,7 +771,7 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
         pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 
                                     500, &reason, NULL, NULL);
 
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
         
         return PJ_TRUE;
     }
@@ -761,13 +785,13 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
         pj_str_t reason = pj_str("Invite session error");
         pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 500, &reason, NULL, NULL);
 
-        // pj_mutex_unlock(app.mutex);
+        pj_mutex_unlock(app.mutex);
 
         return PJ_TRUE;
     }
 
-    // /* Разблокируем диалог */
-    // pjsip_dlg_dec_lock(dlg);
+    /* Разблокируем диалог */
+    pjsip_dlg_dec_lock(dlg);
 
     /* Сохраняем информацию о звонке */
     // pj_mutex_lock(app.mutex);
@@ -778,8 +802,8 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
     app.calls[call_idx].stream = NULL;
     app.calls[call_idx].ringing_timer.id = PJ_FALSE;
     app.calls[call_idx].call_media_timer.id = PJ_FALSE;
-    
-    // pj_mutex_unlock(app.mutex);
+    app.calls[call_idx].dlg = dlg;
+
 
     // pjsip_sip_uri *sip_uri_user = app.calls[call_idx].inv->dlg->target;
 
@@ -791,7 +815,7 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
     
     PJ_LOG(3,(THIS_FILE, "CALL TO %.*s!!", (int)app.calls[call_idx].sip_uri_target_user.slen, app.calls[call_idx].sip_uri_target_user.ptr));
 
-
+    pj_mutex_unlock(app.mutex);
 
     /* Отправляем 180 Ringing */
     status = pjsip_inv_initial_answer(app.calls[call_idx].inv, rdata, 
@@ -818,7 +842,7 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
 
     // инициализируем таймер 
     pj_timer_entry_init(&app.calls[call_idx].ringing_timer, app.calls[call_idx].ringing_timer.id, 
-                       (void*)app.calls[call_idx].inv, &ringing_timeout_callback);
+                       (void*)app.calls[call_idx].inv, &ringing_timeout_cb);
 
     // и запускаем его
     status = pjsip_endpt_schedule_timer(app.sip_endpt, &app.calls[call_idx].ringing_timer, &delay);
@@ -841,7 +865,7 @@ pj_status_t create_and_connect_master_port()
     /* Create null port if not exists */
     if (!app.null_port) 
     {
-        status = pjmedia_null_port_create(app.pool, CLOCK_RATE, 1,
+        status = pjmedia_null_port_create(app.pool, CLOCK_FREQ, 1,
                                         SAMPLES_PER_FRAME, BITS_PER_SAMPLE,
                                         &app.null_port);
         if (status != PJ_SUCCESS) 
@@ -877,33 +901,6 @@ pj_status_t create_and_connect_master_port()
     return PJ_SUCCESS;
 }
 
-pj_status_t create_and_connect_writer_to_conf(const char *filename)
-{
-    pj_status_t status;
-    status = pjmedia_wav_writer_port_create(  app.pool, filename,
-                                            CLOCK_RATE,
-                                            NCHANNELS,
-                                            SAMPLES_PER_FRAME,
-                                            BITS_PER_SAMPLE,
-                                            0, 700000, 
-                                            &app.writer_port);
-    if (status != PJ_SUCCESS) 
-    {
-        app_perror(THIS_FILE, "Unable to open WAV file for writing", status);
-        return status;
-    }
-
-    status = pjmedia_conf_add_port(app.conf, app.pool,
-        app.writer_port, NULL, &app.writer_slot);
-    if (status != PJ_SUCCESS) 
-    {
-        app_perror(THIS_FILE, "Unable to add writer to conf", status);
-        return status;
-    }
-    
-    return PJ_SUCCESS;
-}
-
 pj_status_t create_and_connect_player_to_conf(const char *filename)
 {
     pj_status_t status;
@@ -912,7 +909,7 @@ pj_status_t create_and_connect_player_to_conf(const char *filename)
         app.pool, filename,
         SAMPLES_PER_FRAME *
         1000 / NCHANNELS /
-        CLOCK_RATE,
+        CLOCK_FREQ,
         0, 700000, &app.wav_port);
 
     if (status != PJ_SUCCESS) 
@@ -965,8 +962,8 @@ static pj_status_t init_system()
     if (status != PJ_SUCCESS) return status;
 
     // Мьютекс для синхронизации
-    // status = pj_mutex_create(app.pool, "mutex", PJ_MUTEX_SIMPLE, &app.mutex);
-    // PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
+    status = pj_mutex_create(app.pool, "mutex", PJ_MUTEX_SIMPLE, &app.mutex);
+    PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
 
     // Инициализация массива звонков
     for (int i = 0; i < MAX_CALLS; i++) 
@@ -991,7 +988,7 @@ pj_status_t create_and_connect_tone_to_conf(player_tone_t *player)
     
     label = pj_str(name);
 
-    status = pjmedia_tonegen_create2(app.pool, &label, CLOCK_RATE, NCHANNELS, SAMPLES_PER_FRAME, 
+    status = pjmedia_tonegen_create2(app.pool, &label, CLOCK_FREQ, NCHANNELS, SAMPLES_PER_FRAME, 
         BITS_PER_SAMPLE, PJMEDIA_TONEGEN_LOOP, &player->tone_pjmedia_port);
     if (status != PJ_SUCCESS) 
     {
@@ -1003,7 +1000,7 @@ pj_status_t create_and_connect_tone_to_conf(player_tone_t *player)
         player->tone_pjmedia_port, NULL, &player->tone_slot);
     if (status != PJ_SUCCESS) 
     {
-        pjmedia_port_destroy(app.wav_port);
+        pjmedia_port_destroy(player->tone_pjmedia_port);
         app_perror(THIS_FILE, "Unable to add file to conference bridge",
         status);
         return status;
@@ -1071,14 +1068,13 @@ static void call_on_media_update(pjsip_inv_session *inv, pj_status_t status)
 
     // инициализируем таймер 
     pj_timer_entry_init(&call->call_media_timer, call->call_media_timer.id, 
-                       (void*)call->inv, &call_media_timeout_callback);
+                       (void*)call->inv, &call_media_timeout_cb);
 
     // и запускаем его
     status = pjsip_endpt_schedule_timer(app.sip_endpt, &call->call_media_timer, &delay);
     if (status != PJ_SUCCESS)
     {
         PJ_LOG(3,(THIS_FILE, "SCHEDULE TIMER ERROR"));
-        return PJ_TRUE;
     }
 
     // pj_mutex_unlock(app.mutex);
@@ -1113,7 +1109,8 @@ static pj_status_t add_media_to_call(call_t *call)
     
     // Запускаем поток
     status = pjmedia_stream_start(call->stream);
-    if (status != PJ_SUCCESS) {
+    if (status != PJ_SUCCESS) 
+    {
         PJ_LOG(3,(THIS_FILE, "Failed to start stream"));
         pjmedia_stream_destroy(call->stream);
         pjmedia_transport_close(call->transport);
@@ -1125,7 +1122,7 @@ static pj_status_t add_media_to_call(call_t *call)
     if (status != PJ_SUCCESS) 
     {
         app_perror( THIS_FILE, "Unable to start UDP media transport", status);
-        return;
+        return status;
     }
 
     // Получаем медиа порт
@@ -1141,7 +1138,8 @@ static pj_status_t add_media_to_call(call_t *call)
     // Добавляем в конференц-мост
     status = pjmedia_conf_add_port(app.conf, call->inv->dlg->pool,
                                  call->port, NULL, &call->slot);
-    if (status != PJ_SUCCESS) {
+    if (status != PJ_SUCCESS) 
+    {
         PJ_LOG(3,(THIS_FILE, "Failed to add to conference"));
         pjmedia_port_destroy(call->port);
         pjmedia_stream_destroy(call->stream);
@@ -1164,8 +1162,8 @@ static pj_status_t add_media_to_call(call_t *call)
     }
     else  if ((pj_strcmp( &(call->sip_uri_target_user), &(app.long_tone_player_name) ) == 0 ))
     {
-        // Подключаем к WAV плееру
-        if (app.wav_port) 
+        // Подключаем к длинному гудку
+        if (app.long_tone.tone_pjmedia_port) 
         {
             status = pjmedia_conf_connect_port(app.conf, app.long_tone.tone_slot, call->slot, 0);
             if (status != PJ_SUCCESS) 
@@ -1174,12 +1172,12 @@ static pj_status_t add_media_to_call(call_t *call)
             }
         }
     }
-    else  if ((pj_strcmp( &(call->sip_uri_target_user), &(app.KVP_tone_player_name) ) == 0 ))
+    else  if ((pj_strcmp( &(call->sip_uri_target_user), &(app.kvp_tone_player_name) ) == 0 ))
     {
-        // Подключаем к WAV плееру
-        if (app.wav_port) 
+        // Подключаем к КВП гудку
+        if (app.kvp_tone.tone_pjmedia_port) 
         {
-            status = pjmedia_conf_connect_port(app.conf, app.KVP_tone.tone_slot, call->slot, 0);
+            status = pjmedia_conf_connect_port(app.conf, app.kvp_tone.tone_slot, call->slot, 0);
             if (status != PJ_SUCCESS) 
             {
                 PJ_LOG(3,(THIS_FILE, "Failed to connect to WAV player"));
@@ -1188,38 +1186,8 @@ static pj_status_t add_media_to_call(call_t *call)
     }
     else PJ_LOG(3,(THIS_FILE, "NO TARGET_USER == PLAYER_NAME"));
     
-    // // Подключаем к WAV рекордеру
-    // if (app.writer_port) {
-    //     status = pjmedia_conf_connect_port(app.conf, call->slot, app.writer_slot, 0);
-    //     if (status != PJ_SUCCESS) {
-    //         PJ_LOG(3,(THIS_FILE, "Failed to connect to WAV recorder"));
-    //     }
-    // }
-    
     return PJ_SUCCESS;
 }
-
-// static int get_new_timer_id(call_t call)
-// {
-//     int i;
-//     int timer_id = call.slot * 1000;
-//     pj_bool_t quit = PJ_FALSE;
-
-//     while (quit == PJ_FALSE)
-//     {
-//         quit = PJ_TRUE;
-//         for (i = 0; i < MAX_CALLS; ++i)
-//         {
-//             if ( (app.calls[i].ringing_timer.id == timer_id) || (app.calls[i].call_media_timer.id == timer_id) )
-//             {
-//                 ++timer_id;
-//                 quit = PJ_FALSE;
-//                 break;
-//             }
-//         }
-//     }
-//     return timer_id;
-// }
 
 static int get_new_timer_id()
 {
@@ -1248,37 +1216,30 @@ static int worker_proc(void *arg)
     return 0;
 }
 
-static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry) 
+static void ringing_timeout_cb(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry) 
 {
     pjsip_inv_session *inv = (pjsip_inv_session *)entry->user_data;
     pjsip_tx_data *tdata;
     pj_status_t status;
     
+    PJ_UNUSED_ARG(timer_heap);
+    
     // pj_mutex_lock(app.mutex);
     
-    // Проверяем, что звонок ещё активен
-    call_t *call = NULL;
-    for (int i = 0; i < MAX_CALLS; i++) 
-    {
-        if (app.calls[i].inv == inv && app.calls[i].in_use) 
-        {
-            call = &app.calls[i];
-            break;
-        }
-    }
-    
-    if (!call) 
-    {
-        // pj_mutex_unlock(app.mutex);
-        return;
-    }
-    
-    // Отмечаем, что таймер выполнен
-    call->ringing_timer.id = 0;
+    // // находим наш текущий звонок
+    // call_t *call = NULL;
+    // for (int i = 0; i < MAX_CALLS; i++) 
+    // {
+    //     if (app.calls[i].inv == inv && app.calls[i].in_use) 
+    //     {
+    //         call = &app.calls[i];
+    //         break;
+    //     }
+    // }
     
     // pj_mutex_unlock(app.mutex);
     
-    // Отправляем 200 OK только если звонок активен
+    // Отправляем 200 OK
     status = pjsip_inv_answer(inv, 200, NULL, NULL, &tdata);
     if (status == PJ_SUCCESS) 
     {
@@ -1286,48 +1247,15 @@ static void ringing_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_time
     }
 }
 
-// static void call_media_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry) {
-//     pjsip_inv_session *inv = (pjsip_inv_session *)entry->user_data;
-//     pjsip_tx_data *bye;
-//     pj_str_t reason = pj_str("Call completed");
-//     pj_status_t status;
-    
-//     pj_mutex_lock(app.mutex);
-    
-//     // проверка что звонок ещё активен
-//     call_t *call = NULL;
-//     for (int i = 0; i < MAX_CALLS; i++) {
-//         if (app.calls[i].inv == inv && app.calls[i].in_use) 
-//         {
-//             call = &app.calls[i];
-//             break;
-//         }
-//     }
-    
-//     if (!call) {
-//         pj_mutex_unlock(app.mutex);
-//         return;
-//     }
 
-//     call->call_media_timer.id = 0;
-    
-//     pj_mutex_unlock(app.mutex);
-    
-//     // завершаем звонок
-//     status = pjsip_inv_end_session(inv, PJSIP_SC_OK, &reason, &bye);
-//     if (status == PJ_SUCCESS && bye) 
-//     {
-//         pjsip_inv_send_msg(inv, bye);
-//     }
-// }
-
-
-static void call_media_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry)
+static void call_media_timeout_cb(pj_timer_heap_t *timer_heap, struct pj_timer_entry *entry)
 {
     pjsip_inv_session *inv = (pjsip_inv_session *)entry->user_data;
     pjsip_tx_data *tdata;
     pj_str_t reason = pj_str("Call completed");
     pj_status_t status;
+
+    PJ_UNUSED_ARG(timer_heap);
 
     /* Отправляем BYE */
     status = pjsip_inv_end_session(inv, PJSIP_SC_OK, &reason, &tdata);
@@ -1335,10 +1263,17 @@ static void call_media_timeout_callback(pj_timer_heap_t *timer_heap, struct pj_t
     {
         pjsip_inv_send_msg(inv, tdata);
     }
+
+}
+
+static int log_returned_status(const char *object, pj_status_t status)
+{
+    int result = PJ_TRUE;
+    if (status != PJ_SUCCESS)
+    {
+        result = app_perror(THIS_FILE, object, status);
+        return result;
+    }
     
-    /* 
-       Не нужно вручную чистить ресурсы здесь!
-       PJSIP вызовет on_state_changed с DISCONNECTED,
-       где вы должны очистить ресурсы 
-    */
+    return result;
 }

@@ -10,7 +10,7 @@
       From: sipp <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
       To: [service] <sip:[service]@[remote_ip]:[remote_port]>
       Call-ID: [call_id]
-      CSeq: 1 INVITE
+      CSeq: [cseq] INVITE
       Contact: sip:sipp@[local_ip]:[local_port]
       Max-Forwards: 70
       Subject: Performance Test
@@ -43,7 +43,7 @@
       From: sipp <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
       To: [service] <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
       Call-ID: [call_id]
-      CSeq: 1 ACK
+      CSeq: [cseq] ACK
       Contact: sip:sipp@[local_ip]:[local_port]
       Max-Forwards: 70
       Subject: Performance Test
@@ -51,27 +51,44 @@
     ]]>
   </send>
 
-  <!-- Пауза 8 секунд -->
-  <pause milliseconds="15000"/>
+  <!-- Пауза -->
+  <pause milliseconds="5000"/>
 
+ <!-- -->
   <!-- Ожидаем BYE от удаленной стороны -->
-  <recv request="BYE" rtd="true">
+  <recv request="BYE">
   </recv>
 
-  <!-- Отвечаем 200 OK на BYE -->
   <send>
     <![CDATA[
-      SIP/2.0 200 OK
-      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
-      From: sipp <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
-      To: [service] <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
-      Call-ID: [call_id]
-      CSeq: 1 BYE
-      Max-Forwards: 70
-      Subject: Performance Test
-      Content-Length: 0
+    SIP/2.0 200 OK
+    [last_Via:]
+    [last_From:]
+    [last_To:]
+    [last_Call-ID:]
+    [last_CSeq:]
+    Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+    Content-Length: 0
     ]]>
   </send>
+
+  <!-- <label id="send_bye"/>
+
+  <send retrans="500">
+    <![CDATA[
+     BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+    Via: SIP/2.0/[transport] [local_ip]:[local_port]
+    From: sipp  <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag01[call_number]
+    To: [service] <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+    Call-ID: [call_id]
+    Cseq: 2 BYE
+    Contact: sip:sipp@[local_ip]:[local_port]
+    Content-Length: 0
+    ]]>
+  </send>
+      
+  <recv response="200">
+  </recv>	-->
 
   <!-- Статистика -->
   <ResponseTimeRepartition value="10, 20, 30, 40, 50, 100, 150, 200"/>
