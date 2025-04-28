@@ -19,7 +19,9 @@
                                                 * PJ_HAS_IPV6 must be enabled and
                                                 * your system must support IPv6.  */
 #define NUMBER_OF_TONES_IN_ARRAY    1
-#define FILE_NAME "output_file.wav"
+#define FILE_NAME                   "output_file.wav"
+#define FLAGS_BITMASK_IPV6          2
+#define MULTIPLIER_RTP_PORT         2
 
 typedef struct 
 {
@@ -94,10 +96,10 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata);
 static void saving_call_information(int call_idx,
                                     pjmedia_transport *transport,
                                     pjsip_dialog *dlg,
-                                    pj_str_t *target_uri);
+                                    pj_str_t *target_sip_uri);
 
 /* Check if the number exist in avaible numbers */
-static pj_status_t exists_in_available_numbers(pj_str_t *target_uri);
+static pj_status_t exists_in_available_numbers(pj_str_t *target_sip_uri);
 
 /* Initialization and start of the timer */
 static pj_status_t init_and_schedule_timer(pj_timer_entry *timer,
@@ -107,7 +109,7 @@ static pj_status_t init_and_schedule_timer(pj_timer_entry *timer,
                                             pj_timer_heap_callback *cb);
 
 /* Check the number of active calls */
-static int check_number_active_calls(void);
+static int find_free_call_slot(void);
 
 /* function for worker thread */
 static int worker_proc(void *arg);
@@ -133,6 +135,21 @@ static void call_media_timeout_cb(pj_timer_heap_t *timer_heap, struct pj_timer_e
 
 /* Util to display the error message for the specified error code  */
 static int app_perror(const char *sender, const char *title, pj_status_t status);
+static pj_bool_t process_non_invite_request(pjsip_rx_data *rdata);
+static void respond_busy(pjsip_rx_data *rdata);
+static pjsip_sip_uri* get_target_uri(pjsip_rx_data *rdata);
+static void respond_not_found(pjsip_rx_data *rdata);
+static void verify_invite_session(pjsip_rx_data *rdata);
+static pj_status_t process_invite_request(pjsip_rx_data *rdata, int call_idx, pjsip_sip_uri *target_sip_uri);
+static pj_status_t create_call_dialog(pjsip_rx_data *rdata, int call_idx, pjsip_sip_uri *target_sip_uri);
+static pj_status_t setup_call(pjsip_rx_data *rdata, int call_idx, pjsip_sip_uri *target_sip_uri);
+static pj_status_t send_ringing_response(call_t *call, pjsip_rx_data *rdata);
+static pj_status_t schedule_ringing_timer(call_t *call);
+static void save_call_info(int call_idx, pjsip_sip_uri *target_sip_uri);
+static pj_status_t create_media_transport(int call_idx);
+pj_str_t create_contact_uri(pj_sockaddr hostaddr, pjsip_sip_uri *target_sip_uri);
+static pj_status_t create_sdp_offer(pj_pool_t *pool, pjmedia_transport *transport, pjmedia_sdp_session **local_sdp);
+static pj_status_t create_invite_session(pjsip_dialog *dlg, pjsip_rx_data *rdata, pjmedia_sdp_session *local_sdp, pjsip_inv_session **inv_session);
 
 static pjsip_module mod_simpleua =
 {
@@ -632,143 +649,44 @@ static void release_all_pools(void)
 static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
 {
     pj_status_t status;
-    pj_sockaddr hostaddr;
-    char temp[80], hostip[PJ_INET6_ADDRSTRLEN];
-    pj_str_t local_uri;
-    pjsip_dialog *dlg;
-    pjmedia_sdp_session *local_sdp;
     pjsip_tx_data *tdata;
-    unsigned options = 0;
     int call_idx = -1;
     pjsip_sip_uri *target_sip_uri;
-    pj_str_t reason;
 
     /* Process only INVITE requests */
     if (rdata->msg_info.msg->line.req.method.id != PJSIP_INVITE_METHOD)
     {
-        /* For all other requests (except ACK) we respond with 500 */
-        if (rdata->msg_info.msg->line.req.method.id != PJSIP_ACK_METHOD)
-        {
-            reason = pj_str("Simple UA unable to handle this request");
-
-            pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 500, &reason, NULL, NULL);
-        }
-        return PJ_TRUE;
+        return process_non_invite_request(rdata);
     }
 
-    /* Check the number of active calls */
     pj_mutex_lock(app.mutex);
-    call_idx = check_number_active_calls();
-
+    call_idx = find_free_call_slot();
     if (call_idx == -1) 
     {
-        reason = pj_str("Too many calls");
-
-        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 486, &reason, NULL, NULL);
-
+        respond_busy(rdata);
         pj_mutex_unlock(app.mutex);
-
         return PJ_TRUE;
     }
 
-    /* Get target uri */
-    target_sip_uri = (pjsip_sip_uri *) pjsip_uri_get_uri(rdata->msg_info.msg->line.req.uri);
+    target_sip_uri = get_target_uri(rdata);
 
     /* Check if the dialed number is correct */
-    if ( (exists_in_available_numbers( &(target_sip_uri->user) ) ) != PJ_SUCCESS )
+    if (!exists_in_available_numbers(&target_sip_uri->user))
     {
-        /* If the number is not entered correctly, we respond with 404 (Not Found)*/
-        reason = pj_str("The number is dialed incorrectly");
-
-        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 404, &reason, NULL, NULL);
-
+        respond_not_found(rdata);
         pj_mutex_unlock(app.mutex);
-
         return PJ_TRUE;
     }
 
-    status = pjsip_inv_verify_request(rdata, &options, NULL, NULL, app.sip_endpt, NULL);
+    verify_invite_session(rdata);
+
+    status = create_call_dialog(rdata, call_idx, target_sip_uri);
     if (status != PJ_SUCCESS)
     {
-        reason = pj_str("Sorry Simple UA can not handle this INVITE");
-
-        goto _on_error_respond_stateless;
-    } 
-
-    /* Get server IP address for Contact header */
-    if (pj_gethostip(pj_AF_INET(), &hostaddr) != PJ_SUCCESS) 
-    {
-        reason = pj_str("Server error");
-        
-        goto _on_error_respond_stateless;
+        return status;
     }
 
-    /* Формируем Contact URI */
-    pj_sockaddr_print(&hostaddr, hostip, sizeof(hostip), 2);
-    pj_ansi_snprintf(temp, sizeof(temp), "<sip:%.*s@%s:%d>", (int)target_sip_uri->user.slen, target_sip_uri->user.ptr, hostip,SIP_PORT);
-    local_uri = pj_str(temp);
-
-    /* Создаем UAS dialog */
-    status = pjsip_dlg_create_uas_and_inc_lock(pjsip_ua_instance(), rdata, &local_uri, &dlg);
-    if (status != PJ_SUCCESS) 
-    {
-        reason = pj_str("Failed to create dialog");
-        
-        goto _on_error_respond_stateless;
-    }
-
-    /* Создаем медиа транспорт для SDP оффера */
-    pjmedia_transport *transport;
-
-    status = pjmedia_transport_udp_create3(app.med_endpt, pj_AF_INET(), NULL, NULL,
-                                            RTP_PORT + (call_idx * 2), 0,
-                                            &transport);
-    if (status != PJ_SUCCESS)
-    {
-        pjsip_dlg_dec_lock(dlg);
-        
-        reason = pj_str("Media transport error");
-        
-        goto _on_error_respond_stateless;
-    }
-
-    /* Создаем SDP оффер */
-    pjmedia_sock_info sock_info;
-    pjmedia_transport_info tp_info;
-    pjmedia_transport_info_init(&tp_info);
-    pjmedia_transport_get_info(transport, &tp_info);
-    pj_memcpy(&sock_info, &tp_info.sock_info, sizeof(pjmedia_sock_info));
-
-    status = pjmedia_endpt_create_sdp(app.med_endpt, dlg->pool, 1, &sock_info, &local_sdp);
-    if (status != PJ_SUCCESS) 
-    {
-        pjmedia_transport_close(transport);
-
-        pjsip_dlg_dec_lock(dlg);
-
-        reason = pj_str("SDP creation error");
-
-        goto _on_error_respond_stateless;
-    }
-
-    /* Создаем INVITE сессию */
-    status = pjsip_inv_create_uas(dlg, rdata, local_sdp, 0, &app.calls[call_idx].inv);
-    if (status != PJ_SUCCESS)
-    {
-        pjmedia_transport_close(transport);
-
-        pjsip_dlg_dec_lock(dlg);
-
-        reason = pj_str("Invite session error");
-
-        goto _on_error_respond_stateless;
-    }
-
-    /* Разблокируем диалог */
-    pjsip_dlg_dec_lock(dlg);
-
-    /* Сохраняем информацию о звонке */
-    saving_call_information(call_idx, transport, dlg, &target_sip_uri->user);
+    save_call_info(call_idx, target_sip_uri);
 
     PJ_LOG(3,(THIS_FILE, "CALL TO %.*s!!", (int)app.calls[call_idx].sip_uri_target_user.slen, app.calls[call_idx].sip_uri_target_user.ptr));
 
@@ -795,17 +713,234 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
     }
 
     return PJ_TRUE;
+}
 
-_on_error_respond_stateless:
-    pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 500, &reason, NULL, NULL);
-
-    pj_mutex_unlock(app.mutex);
-
+static pj_bool_t process_non_invite_request(pjsip_rx_data *rdata)
+{
+    if (rdata->msg_info.msg->line.req.method.id != PJSIP_ACK_METHOD)
+    {
+        pj_str_t reason = pj_str("Simple UA unable to handle this request");
+        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 500, &reason, NULL, NULL);
+    }
     return PJ_TRUE;
 }
 
+static void respond_busy(pjsip_rx_data *rdata)
+{
+    pj_str_t reason = pj_str("Too many calls");
+    pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 486, &reason, NULL, NULL);
+}
+
+static pjsip_sip_uri* get_target_uri(pjsip_rx_data *rdata)
+{
+    return (pjsip_sip_uri*)pjsip_uri_get_uri(rdata->msg_info.msg->line.req.uri);
+}
+
+/* Check if the number exist in avaible numbers */
+static pj_bool_t exists_in_available_numbers(pj_str_t *number)
+{
+    return (pj_strcmp(number, &app.wav_player_name) == 0) ||
+           (pj_strcmp(number, &app.long_tone_player_name) == 0) ||
+           (pj_strcmp(number, &app.kvp_tone_player_name) == 0);
+}
+
+static void respond_not_found(pjsip_rx_data *rdata)
+{
+    pj_str_t reason = pj_str("The number is dialed incorrectly");
+    pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 404, &reason, NULL, NULL);
+}
+
+static void verify_invite_session(pjsip_rx_data *rdata)
+{
+    pj_status_t status;
+    unsigned options = 0;
+    pj_str_t reason;
+    
+    status = pjsip_inv_verify_request(rdata, &options, NULL, NULL, app.sip_endpt, NULL);
+    if (status != PJ_SUCCESS)
+    {
+        reason = pj_str("Sorry Simple UA can not handle this INVITE");
+
+        pjsip_endpt_respond_stateless(app.sip_endpt, rdata, 500, &reason, NULL, NULL);
+        pj_mutex_unlock(app.mutex);
+    } 
+}
+
+static pj_status_t process_invite_request(pjsip_rx_data *rdata, int call_idx, pjsip_sip_uri *target_sip_uri)
+{
+    pj_status_t status = setup_call(rdata, call_idx, target_sip_uri);
+    if (status != PJ_SUCCESS)
+    {
+        return status;
+    }
+
+    status = send_ringing_response(&app.calls[call_idx], rdata);
+    if (status != PJ_SUCCESS)
+    {
+        return status;
+    }
+
+    return schedule_ringing_timer(&app.calls[call_idx]);
+}
+
+static pj_status_t create_call_dialog(pjsip_rx_data *rdata, int call_idx, pjsip_sip_uri *target_sip_uri)
+{
+    pj_sockaddr hostaddr;
+    pjsip_dialog *dlg;
+    pj_str_t local_uri;
+    pjmedia_sdp_session *local_sdp;
+    pj_status_t status;
+
+    /* Get server IP for Contact header */
+    if (pj_gethostip(pj_AF_INET(), &hostaddr) != PJ_SUCCESS)
+    {
+        return PJ_EUNKNOWN;
+    }
+
+    local_uri = create_contact_uri(hostaddr, target_sip_uri);
+
+    /* Create and lock UAS dialog */
+    status = pjsip_dlg_create_uas_and_inc_lock(pjsip_ua_instance(), rdata, &local_uri, &dlg);
+    if (status != PJ_SUCCESS)
+    {
+        return status;
+    }
+
+    status = create_media_transport(call_idx);
+    if (status != PJ_SUCCESS)
+    {
+        pjsip_dlg_dec_lock(dlg);
+        return status;
+    }
+
+    status = create_sdp_offer(dlg->pool, app.calls[call_idx].transport, &local_sdp);
+    if (status != PJ_SUCCESS) 
+    {
+        pjmedia_transport_close(app.calls[call_idx].transport);
+        pjsip_dlg_dec_lock(dlg);
+        return status;
+    }
+
+    status = create_invite_session(dlg, rdata, local_sdp, &app.calls[call_idx].inv);
+    if (status != PJ_SUCCESS) 
+    {
+        pjmedia_transport_close(app.calls[call_idx].transport);
+        pjsip_dlg_dec_lock(dlg);
+        return status;
+    }
+
+    /* Unlock dialog */
+    pjsip_dlg_dec_lock(dlg);
+
+    return PJ_SUCCESS;
+}
+
+pj_str_t create_contact_uri(pj_sockaddr hostaddr, pjsip_sip_uri *target_sip_uri)
+{
+    char temp[80], hostip[PJ_INET6_ADDRSTRLEN];
+
+
+    pj_sockaddr_print(&hostaddr, hostip, sizeof(hostip), FLAGS_BITMASK_IPV6);
+    pj_ansi_snprintf(temp,
+                    sizeof(temp),
+                    "<sip:%.*s@%s:%d>",
+                    (int)target_sip_uri->user.slen,
+                    target_sip_uri->user.ptr,
+                    hostip,
+                    SIP_PORT);
+    return pj_str(temp);
+}
+
+static pj_status_t create_sdp_offer(pj_pool_t *pool, pjmedia_transport *transport, pjmedia_sdp_session **local_sdp)
+{
+    pjmedia_sock_info sock_info;
+    pjmedia_transport_info tp_info;
+    
+    pjmedia_transport_info_init(&tp_info);
+    pjmedia_transport_get_info(transport, &tp_info);
+    pj_memcpy(&sock_info, &tp_info.sock_info, sizeof(pjmedia_sock_info));
+
+    return pjmedia_endpt_create_sdp(app.med_endpt, pool, 1, &sock_info, local_sdp);
+}
+
+static pj_status_t create_invite_session(pjsip_dialog *dlg,
+                                        pjsip_rx_data *rdata,
+                                        pjmedia_sdp_session *local_sdp,
+                                        pjsip_inv_session **inv_session)
+{
+    return pjsip_inv_create_uas(dlg, rdata, local_sdp, 0, inv_session);
+}
+
+static pj_status_t setup_call(pjsip_rx_data *rdata, int call_idx, pjsip_sip_uri *target_sip_uri)
+{
+    pj_status_t status = create_call_dialog(rdata, call_idx, target_sip_uri);
+    if (status != PJ_SUCCESS)
+    {
+        return status;
+    }
+
+    status = create_media_transport(call_idx);
+    if (status != PJ_SUCCESS)
+    {
+        return status;
+    }
+
+    save_call_info(call_idx, target_sip_uri);
+    return PJ_SUCCESS;
+}
+
+static pj_status_t send_ringing_response(call_t *call, pjsip_rx_data *rdata)
+{
+    pjsip_tx_data *tdata;
+    pj_status_t status = pjsip_inv_initial_answer(call->inv, rdata, 180, 
+                                                 NULL, NULL, &tdata);
+    if (status != PJ_SUCCESS)
+    {
+        return status;
+    }
+    return pjsip_inv_send_msg(call->inv, tdata);
+}
+
+static pj_status_t schedule_ringing_timer(call_t *call)
+{
+    return init_and_schedule_timer(&call->ringing_timer, call->slot, 3, 0,
+                                 &ringing_timeout_cb);
+}
+
+static pj_status_t create_media_transport(int call_idx)
+{
+    pj_status_t status = pjmedia_transport_udp_create3(app.med_endpt,
+                                                     pj_AF_INET(),
+                                                     NULL,
+                                                     NULL,
+                                                     RTP_PORT + (call_idx * MULTIPLIER_RTP_PORT),
+                                                     0,
+                                                     &app.calls[call_idx].transport);
+    if (status != PJ_SUCCESS)
+    {
+        return status;
+    }
+
+    /* Initialize media transport */
+    return pjmedia_transport_media_start(app.calls[call_idx].transport, 0, 0, 0, 0);
+}
+
+static void save_call_info(int call_idx, pjsip_sip_uri *target_sip_uri)
+{
+    app.calls[call_idx].in_use = PJ_TRUE;
+    app.calls[call_idx].port = NULL;
+    app.calls[call_idx].slot = -1;
+    app.calls[call_idx].stream = NULL;
+    app.calls[call_idx].ringing_timer.id = PJ_FALSE;
+    app.calls[call_idx].call_media_timer.id = PJ_FALSE;
+
+    /* Save target URI */
+    app.calls[call_idx].sip_uri_target_user.ptr = (char*)pj_pool_alloc(app.pool, 256);
+    pj_strcpy(&app.calls[call_idx].sip_uri_target_user, &target_sip_uri->user);
+}
+
 // cохранение информации о звонке
-static void saving_call_information(int call_idx, pjmedia_transport *transport, pjsip_dialog *dlg, pj_str_t *target_uri)
+static void saving_call_information(int call_idx, pjmedia_transport *transport, pjsip_dialog *dlg, pj_str_t *target_sip_uri)
 {
     app.calls[call_idx].in_use = PJ_TRUE;
     app.calls[call_idx].transport = transport;
@@ -818,22 +953,9 @@ static void saving_call_information(int call_idx, pjmedia_transport *transport, 
 
     // сохрняем target uri в стурктуре звонок
     app.calls[call_idx].sip_uri_target_user.ptr = (char*) pj_pool_alloc(app.pool , 256);
-    pj_strcpy(&app.calls[call_idx].sip_uri_target_user, target_uri);
+    pj_strcpy(&app.calls[call_idx].sip_uri_target_user, target_sip_uri);
 
     return;
-}
-
-/* Check if the number exist in avaible numbers */
-static pj_status_t exists_in_available_numbers(pj_str_t *target_uri)
-{
-    if ( !( ((pj_strcmp(target_uri, &(app.wav_player_name))) == 0 )
-        || ((pj_strcmp( target_uri, &(app.long_tone_player_name))) == 0)
-        || ((pj_strcmp( target_uri, &(app.kvp_tone_player_name))) == 0) ))
-    {
-        return PJ_TRUE;
-    }
-
-    return PJ_SUCCESS;
 }
 
 /* Initialization and start of the timer */
@@ -863,7 +985,7 @@ static pj_status_t init_and_schedule_timer(pj_timer_entry *timer, int call_idx, 
 }
 
 /* Check the number of active calls */
-static int check_number_active_calls(void)
+static int find_free_call_slot(void)
 {
     int call_idx = -1;
 

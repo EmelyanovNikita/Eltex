@@ -248,7 +248,7 @@ int main()
     }
 
     /* Tone initialization */
-    app.long_tone.tone.freq1 =          425;
+    app.long_tone.tone.freq1 =           425;
     app.long_tone.tone.freq2 =           0;
     app.long_tone.tone.on_msec =         1000;
     app.long_tone.tone.off_msec =        0;
