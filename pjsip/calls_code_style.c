@@ -8,6 +8,14 @@
 
 /* Settings */
 #define THIS_FILE                   "calls_test.c"
+#define FILE_NAME                   "output_4.wav"
+#define MOD_AUTOANSWER_NAME         "mod-autoanswerer"
+#define MOD_MSG_LOG_NAME            "mod-msg-log"
+#define WAV_PLAYER_NAME             "100"
+#define LONG_TONE_NAME              "200"
+#define KPV_TONE_NAME               "300"
+#define THREAD_NAME                 "worker"
+#define MUTEX_NAME                  "mutex_calls"
 #define CLOCK_RATE                  16000
 #define SAMPLES_PER_FRAME           (CLOCK_RATE/100)
 #define BITS_PER_SAMPLE             16
@@ -17,7 +25,6 @@
 #define RTP_PORT                    4000
 #define AF                          (pj_AF_INET())
 #define NUMBER_OF_TONES_IN_ARRAY    1
-#define FILE_NAME                   "output_4.wav"
 #define FLAGS_BITMASK_IPV6          2
 #define MULTIPLIER_RTP_PORT         2
 #define FREQ1                       425
@@ -25,17 +32,12 @@
 #define ON_MSEC                     1000
 #define OFF_MSEC_LONG_TONE          0
 #define OFF_MSEC_KPV_TONE           4000
-#define MOD_AUTOANSWER_NAME         "mod-autoanswerer"
-#define MOD_MSG_LOG_NAME            "mod-msg-log"
 #define PTIME                       SAMPLES_PER_FRAME * 1000 / NCHANNELS / CLOCK_RATE
 #define RINGING_TIMER_SEC           3
 #define RINGING_TIMER_MSEC          0
 #define MEDIA_TIMER_SEC             7
 #define MEDIA_TIMER_MSEC            0
 #define BUF_SIZE_WAV_PLAYEER        0
-#define WAV_PLAYER_NAME             "100"
-#define LONG_TONE_NAME              "200"
-#define KPV_TONE_NAME               "300"
 #define OK_ANSWER                   200
 #define RINGING_ANSWER              180
 #define UNDEFINED_ID                -1
@@ -243,7 +245,7 @@ int main()
         return 1;
     }
 
-    status = pj_mutex_create(app.pool, "mutex", PJ_MUTEX_SIMPLE, &app.mutex);
+    status = pj_mutex_create(app.pool, MUTEX_NAME, PJ_MUTEX_SIMPLE, &app.mutex);
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
 
     /* Initializing the call array */
@@ -287,8 +289,8 @@ int main()
     app.kpv_tone.tone.volume =          0;
     app.kpv_tone.tone.flags =           0;
     app.kpv_tone.tone_slot =            (unsigned)UNDEFINED_ID;
-    app.kpv_tone.tone_pjmedia_port =   NULL;
-    app.kpv_tone_player_name =         pj_str(KPV_TONE_NAME);
+    app.kpv_tone.tone_pjmedia_port =    NULL;
+    app.kpv_tone_player_name =          pj_str(KPV_TONE_NAME);
 
     /* Creating and attaching a tone to the bridge*/
     status = create_and_connect_tone_to_conf(&app.kpv_tone);
@@ -300,8 +302,7 @@ int main()
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
 
     /*Creating a new thread - it will handle events*/
-    pj_thread_create(app.pool, "sipecho", &worker_proc, NULL, 0, 0,
-        &app.worker_thread);
+    pj_thread_create(app.pool, THREAD_NAME, &worker_proc, NULL, 0, 0, &app.worker_thread);
 
     /* Main loop */
     for (;;)
