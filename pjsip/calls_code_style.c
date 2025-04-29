@@ -363,7 +363,7 @@ static pj_status_t init_pjsip(void)
     status = pjsip_endpt_register_module(app.sip_endpt, &mod_simpleua);
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, status);
 
-    status = pjsip_endpt_register_module( app.sip_endpt, &msg_logger);
+    status = pjsip_endpt_register_module(app.sip_endpt, &msg_logger);
     PJ_ASSERT_RETURN(status == PJ_SUCCESS, 1);
 
     return PJ_SUCCESS;
