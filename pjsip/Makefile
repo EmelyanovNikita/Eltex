@@ -5,7 +5,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra $(shell pkg-config --cflags libpjproject)
 LDFLAGS = $(shell pkg-config --libs libpjproject)
 TARGET = auto_answer
-SRC = calls_test.c
+SRC = calls_code_style.c
 
 # Default target
 all: $(TARGET)
