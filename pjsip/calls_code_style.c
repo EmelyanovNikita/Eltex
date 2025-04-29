@@ -32,7 +32,7 @@
 #define ON_MSEC                     1000
 #define OFF_MSEC_LONG_TONE          0
 #define OFF_MSEC_KPV_TONE           4000
-#define PTIME                       SAMPLES_PER_FRAME * 1000 / NCHANNELS / CLOCK_RATE
+#define PTIME                       (SAMPLES_PER_FRAME * 1000 / NCHANNELS / CLOCK_RATE)
 #define RINGING_TIMER_SEC           3
 #define RINGING_TIMER_MSEC          0
 #define MEDIA_TIMER_SEC             7
@@ -46,7 +46,7 @@
 #define NUM_USED_APP_PORTS          4
 #define LOG_LEVEL                   5
 #define MAX_TIME_EVENTS_WAIT        10
-#define LOG_LEVEL_MIDDLE
+#define LOG_LEVEL_MIDDLE            4
 #define MAX_SIP_URI_SIZE            256
 
 typedef struct 
@@ -181,7 +181,7 @@ static pjsip_module mod_simpleua =
 /* Notification on incoming messages */
 static pj_bool_t logging_on_rx_msg(pjsip_rx_data *rdata)
 {
-    PJ_LOG(4,(THIS_FILE, "RX %d bytes %s from %s %s:%d:\n"
+    PJ_LOG(4, (THIS_FILE, "RX %d bytes %s from %s %s:%d:\n"
                          "%.*s\n"
                          "--end msg--",
                          rdata->msg_info.len,
@@ -199,7 +199,7 @@ static pj_bool_t logging_on_rx_msg(pjsip_rx_data *rdata)
 /* Notification on outgoing messages */
 static pj_status_t logging_on_tx_msg(pjsip_tx_data *tdata)
 {
-    PJ_LOG(4,(THIS_FILE, "TX %ld bytes %s to %s %s:%d:\n"
+    PJ_LOG(4, (THIS_FILE, "TX %ld bytes %s to %s %s:%d:\n"
                          "%.*s\n"
                          "--end msg--",
                          (tdata->buf.cur - tdata->buf.start),
@@ -258,7 +258,6 @@ int main()
      * to choose sound */
     app.wav_player_name = pj_str(WAV_PLAYER_NAME);
 
-    /* Creating and connecting player to the bridge */
     status = create_and_connect_player_to_conf(FILE_NAME);
     if (status != PJ_SUCCESS) 
     {
@@ -314,7 +313,7 @@ int main()
         if (fgets(s, sizeof(s), stdin) == NULL)
             continue;
 
-        if (s[0]=='q')
+        if (s[0] =='q')
             break;
     }
 
@@ -884,7 +883,7 @@ static pj_status_t send_ringing_response(call_t *call, pjsip_rx_data *rdata)
     return pjsip_inv_send_msg(call->inv, tdata);
 }
 
-// cохранение информации о звонке
+/* Saving call information */
 static void saving_call_information(int call_idx,
                                     pjmedia_transport *transport,
                                     pjsip_dialog *dlg,
@@ -1136,7 +1135,6 @@ static void call_on_media_update_cb(pjsip_inv_session *inv, pj_status_t status)
     
     call = &app.calls[call_idx];
     
-    /* Add media to the call */
     status = add_media_to_call(call);
     if (status != PJ_SUCCESS) 
     {
