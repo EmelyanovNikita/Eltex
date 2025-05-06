@@ -376,7 +376,7 @@ static pj_status_t init_pjsip(void)
     status = pjsip_endpt_create(&app.cp.factory, hostname->ptr, &app.sip_endpt);
     if (status != PJ_SUCCESS)
     {
-        goto _exit;
+        goto _on_exit;
     }
 
     /* Adding UDP transport */
@@ -386,20 +386,20 @@ static pj_status_t init_pjsip(void)
     status = pjsip_udp_transport_start(app.sip_endpt, &addr.ipv4, NULL, 1, NULL);
     if (status != PJ_SUCCESS)
     {
-        goto _exit;
+        goto _on_exit;
     }
 
     /* Initialization of modules */
     status = pjsip_tsx_layer_init_module(app.sip_endpt);
     if (status != PJ_SUCCESS)
     {
-        goto _exit;
+        goto _on_exit;
     }
 
     status = pjsip_ua_init_module(app.sip_endpt, NULL);
     if (status != PJ_SUCCESS)
     {
-        goto _exit;
+        goto _on_exit;
     }
 
     /* Initialize the INVITE module */
@@ -411,33 +411,33 @@ static pj_status_t init_pjsip(void)
     status = pjsip_inv_usage_init(app.sip_endpt, &inv_cb);
     if (status != PJ_SUCCESS)
     {
-        goto _exit;
+        goto _on_exit;
     }
 
     /* Initialize 100rel support */
     status = pjsip_100rel_init_module(app.sip_endpt);
     if (status != PJ_SUCCESS)
     {
-        goto _exit;
+        goto _on_exit;
     }
 
     /* Register modules */
     status = pjsip_endpt_register_module(app.sip_endpt, &mod_simpleua);
     if (status != PJ_SUCCESS)
     {
-        goto _exit;
+        goto _on_exit;
     }
 
     status = pjsip_endpt_register_module(app.sip_endpt, &msg_logger);
     if (status != PJ_SUCCESS)
     {
-        goto _exit;
+        goto _on_exit;
     }
 
     status = PJ_SUCCESS;
-    goto _exit;
+    goto _on_exit;
 
-_exit:
+_on_exit:
     return status;
 }
 
@@ -1211,38 +1211,38 @@ static pj_status_t init_system(void)
 
     status = pj_init();
     if (status != PJ_SUCCESS)
-        goto _on_error;
+        goto _on_exit;
 
     pj_log_set_level(LOG_LEVEL);
 
     status = pjlib_util_init();
     if (status != PJ_SUCCESS)
-        goto _on_error;
+        goto _on_exit;
 
     /* Must create a pool factory before we can allocate any memory. */
     pj_caching_pool_init(&app.cp, &pj_pool_factory_default_policy, 0);
 
     app.snd_pool = pj_pool_create(&app.cp.factory, "snd", POOL_SIZE, POOL_INCREMENT_SIZE, NULL);
     if (!app.snd_pool)
-        goto _on_pool_error;
+    {
+        status = PJ_ENOMEM;
+        goto _on_exit;
+    }
 
     /* Initialization SIP */
     status = init_pjsip();
     if (status != PJ_SUCCESS)
-        goto _on_error;
+        goto _on_exit;
 
     /* Initialize media */
     status = init_pjmedia();
     if (status != PJ_SUCCESS)
-        goto _on_error;
+        goto _on_exit;
 
-    return PJ_SUCCESS;
+    goto _on_exit;
 
-_on_error:
+_on_exit:
     return status;
-
-_on_pool_error:
-    return PJ_ENOMEM;
 }
 
 /* Add tone to the bridge */
