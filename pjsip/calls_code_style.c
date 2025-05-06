@@ -821,7 +821,7 @@ static pj_bool_t on_rx_request(pjsip_rx_data *rdata)
 
 _error_exit_with_unlock:
     pj_mutex_unlock(app.mutex);
-    return PJ_FALSE;
+    goto _error_exit;
 
 _error_exit:
     return PJ_FALSE;
