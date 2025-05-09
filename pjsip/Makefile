@@ -7,6 +7,7 @@ LDFLAGS = $(shell pkg-config --libs libpjproject)
 TARGET = auto_answer
 SRC = calls_code_style.c
 
+
 # Default target
 all: $(TARGET)
 

@@ -20,7 +20,7 @@
 #define SAMPLES_PER_FRAME           (CLOCK_RATE/100)
 #define BITS_PER_SAMPLE             16
 #define NCHANNELS                   1
-#define MAX_CALLS                   30
+#define MAX_CALLS_STATIC                   30
 #define SIP_PORT                    5062
 #define RTP_PORT                    4000
 #define AF                          (pj_AF_INET())
@@ -93,7 +93,7 @@ static struct app_t
     pj_str_t                    kpv_tone_player_name;
     player_tone_t               kpv_tone;
 
-    call_t                      calls[MAX_CALLS];
+    call_t                      calls[MAX_CALLS_STATIC];
     pj_thread_t                 *worker_thread;
     pj_bool_t                   quit;
     pj_mutex_t                  *mutex;
@@ -271,7 +271,7 @@ int main()
     }
 
     /* Initializing the call array */
-    for (int i = 0; i < MAX_CALLS; i++)
+    for (int i = 0; i < MAX_CALLS_STATIC; i++)
     {
         app.calls[i].in_use = PJ_FALSE;
     }
@@ -473,7 +473,7 @@ static pj_status_t init_pjmedia(void)
     }
 
     status = pjmedia_conf_create(app.pool,
-                                MAX_CALLS + NUM_USED_APP_PORTS,
+                                MAX_CALLS_STATIC + NUM_USED_APP_PORTS,
                                 CLOCK_RATE,
                                 NCHANNELS,
                                 SAMPLES_PER_FRAME,
@@ -588,7 +588,7 @@ static pj_status_t cleanup_all_resources(void)
     pj_status_t status;
 
     /* Clear all calls */
-    for (int i = 0; i < MAX_CALLS; i++) 
+    for (int i = 0; i < MAX_CALLS_STATIC; i++) 
     {
         call_cleanup(&app.calls[i]);
     }
@@ -1085,7 +1085,7 @@ static int get_free_call_slot(void)
 {
     int call_idx = UNDEFINED_ID;
 
-    for (int i = 0; i < MAX_CALLS; i++) 
+    for (int i = 0; i < MAX_CALLS_STATIC; i++) 
     {
         if (!app.calls[i].in_use) 
         {
